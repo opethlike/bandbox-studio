@@ -72,11 +72,12 @@ Uncertain writes are reported and never automatically retried. Firmware flashing
 
 ## Validation status
 
-Hardware validation has been performed on **one Trio and one Mac**, not a range of devices or firmware versions.
+Hardware validation has been performed on **one Trio, one Solo, and one Mac**, not a range of devices or firmware versions.
 
 | Area | Evidence |
 | --- | --- |
 | BLE service discovery and reads | Device services, preset inventory, current selection, and saved details read successfully |
+| BandBox Solo — every implemented operation confirmed over BLE | Preset select (channel `1`), the full looper set, effects (parameter, bypass, model change), channel-1 (guitar) mixer volume, and preset duplicate/rename/save all confirmed directly against hardware. See [docs/protocol.md#bandbox-solo](docs/protocol.md#bandbox-solo). Master volume gets no reply at all on the Solo. The real `server.py`/`Controls`/`DriveRoundTrip.swift`/Swift-probe path (`BANDBOX_GUITAR_CHANNEL=1`) is itself fully confirmed live too, via `check_mcp.py`'s `--live-*` flags: reading, selecting/duplicating/renaming/saving a preset, setting an effect parameter, setting a channel's mixer volume, and the Drive round-trip. Nothing in this repo's Solo support remains purely inferred. |
 | Drive | `41 → 40 → 41`, confirmed by device reports and the amp's display |
 | User-preset workflow | New presets created, selected, programmed, saved, and read back; source factory preset preserved |
 | Effects | Model changes, parameter changes, and active/bypass changes exercised while programming those presets; not every model tested |

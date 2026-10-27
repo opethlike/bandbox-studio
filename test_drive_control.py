@@ -77,6 +77,14 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(summary["from_drive"], 40)
         self.assertNotIn("confirmed_recovery_drive", plan)
 
+    def test_channel_1_solo_selection_is_accepted_and_recorded(self):
+        data = reading()
+        data["selection"].update(channel=1)
+        result = self.store.prepare(data, 43, 40, "American Clean", True)
+        plan, summary = self.store.consume(result["change_token"])
+        self.assertEqual(plan["channel"], 1)
+        self.assertEqual(summary["channel"], "CH1")
+
     def test_unverified_or_error_reading_cannot_prepare(self):
         for change in [{"current_preset_read_verified": False}, {"error": "transport failed"}]:
             data = reading()

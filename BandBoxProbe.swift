@@ -8,11 +8,22 @@ func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
     return CommandLine.arguments[i + 1]
 }
+// Discovery only. The Solo advertises/reports as "JBL BandBox Solo" and has
+// been confirmed to answer channel-select guitar-preset reads (preset_controls
+// accepts channel 1 or 3) -- see docs/protocol.md#bandbox-solo. Everything
+// else in this repo (effects, mixer, looper, save/duplicate/rename) still
+// hardcodes channel 3 in controls.py/DriveRoundTrip.swift and has not been
+// adapted or tested against a Solo; connecting one will let you read presets
+// but other operations are unverified and may behave incorrectly.
+func isSupportedBandBoxName(_ name: String?) -> Bool {
+    name == "JBL BandBox Trio" || name == "JBL BandBox Solo"
+}
 let seconds = Double(arg("--seconds") ?? "15") ?? -1
 let listenOnly = CommandLine.arguments.contains("--listen")
 let readState = CommandLine.arguments.contains("--read-state")
 let readPresets = CommandLine.arguments.contains("--read-presets")
 let readCurrent = CommandLine.arguments.contains("--read-current")
+let readCurrentChannel = UInt8(arg("--channel") ?? "3") ?? 0
 let driveTestRequested = arg("--drive-test-plan") != nil
 let driveSetRequested = arg("--set-drive-plan") != nil
 let driveControlRequested = driveTestRequested || driveSetRequested
@@ -20,8 +31,9 @@ let controlRequested = arg("--control-plan") != nil
 let queryRequested = readState || readPresets || readCurrent || driveControlRequested || controlRequested
 let maximumSeconds = listenOnly ? 300.0 : 60.0
 guard (1...maximumSeconds).contains(seconds), (!driveControlRequested || seconds >= 45), (!controlRequested || seconds >= 12), [listenOnly, readState, readPresets, readCurrent, driveTestRequested, driveSetRequested, controlRequested].filter({ $0 }).count <= 1, !CommandLine.arguments.contains("--query-version"),
-      arg("--id") == nil || UUID(uuidString: arg("--id")!) != nil else {
-    fputs("Usage: bandbox-probe [--id UUID] [--seconds 1..60 (1..300 for --listen)] [--read-state|--read-presets|--read-current|--listen|--drive-test-plan FILE|--set-drive-plan FILE (45..60 seconds)]\n", stderr)
+      arg("--id") == nil || UUID(uuidString: arg("--id")!) != nil,
+      !readCurrent || readCurrentChannel == 1 || readCurrentChannel == 3 else {
+    fputs("Usage: bandbox-probe [--id UUID] [--seconds 1..60 (1..300 for --listen)] [--read-state|--read-presets|--read-current [--channel 1|3]|--listen|--drive-test-plan FILE|--set-drive-plan FILE (45..60 seconds)]\n", stderr)
     exit(2)
 }
 guard !queryRequested || arg("--id") != nil else {
@@ -57,6 +69,7 @@ let configuredControl: (ControlRequest, Data)? = {
 struct DriveTestFile: Decodable {
     let device_uuid: String
     let created_at: Double
+    let channel: UInt8
     let preset_id: UInt8
     let slot_id: UInt8
     let algorithm_id: UInt8
@@ -79,6 +92,7 @@ let configuredDriveTest: DriveRoundTrip? = {
               !driveSetRequested || planFile.confirmed_recovery_drive == nil,
               planFile.device_uuid.uppercased() == arg("--id")?.uppercased(),
               age.isFinite, (0...120).contains(age), planFile.preset_id > 0,
+              planFile.channel == 1 || planFile.channel == 3,
               planFile.slot_id == 3, planFile.algorithm_id == 6, planFile.config_id < models.count,
               planFile.displayed_amp_model == models[Int(planFile.config_id)],
               planFile.bypass_raw <= 1, planFile.displayed_amp_active == (planFile.bypass_raw == 0),
@@ -89,7 +103,7 @@ let configuredDriveTest: DriveRoundTrip? = {
             guard let byte = UInt8(String(chars[i...i+1]), radix: 16) else { throw DriveRoundTrip.Failure.invalidPlan }
             bytes.append(byte)
         }
-        return try DriveRoundTrip(plan: .init(presetID: planFile.preset_id, slotID: planFile.slot_id,
+        return try DriveRoundTrip(plan: .init(channel: planFile.channel, presetID: planFile.preset_id, slotID: planFile.slot_id,
             algorithmID: planFile.algorithm_id, configID: planFile.config_id, bypass: planFile.bypass_raw,
             originalFloatBytes: Data(bytes), displayedDrive: planFile.displayed_drive, liveMetadataConfirmed: true),
             confirmedRecoveryDrive: planFile.confirmed_recovery_drive, requestedDrive: planFile.requested_drive)
@@ -104,6 +118,12 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var target: CBPeripheral?
     var seen = Set<UUID>()
     var candidates = [UUID: CBPeripheral]()
+    // The amp can advertise with no name and no manufacturer data (observed
+    // on the Solo); these are tried, strongest RSSI first, only when no
+    // named candidate was found -- see tools/bandbox_ctl.py's find_amp_client.
+    var anonymousCandidates: [(peripheral: CBPeripheral, rssi: Int)] = []
+    var probingAnonymous: CBPeripheral?
+    var ignoredDisconnects = Set<UUID>()
     var done = false
     var tx: CBCharacteristic?
     var queried = false
@@ -146,6 +166,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         central.stopScan()
         if let p = target { central.cancelPeripheralConnection(p) }
+        if let p = probingAnonymous { central.cancelPeripheralConnection(p) }
         emit("complete", ["nearby_count": seen.count, "target_found": target != nil,
                          "connected": connected, "response_received": responseReceived, "setting_writes": settingWrites,
                          "drive_test_outcome": driveOutcome ?? NSNull()])
@@ -185,13 +206,13 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             if arg("--id") == nil {
                 let matches = central.retrieveConnectedPeripherals(withServices: [
                     CBUUID(string: "65786365-6C70-6F69-6E74-2E636F6D0000")
-                ]).filter { $0.name == "JBL BandBox Trio" }
+                ]).filter { isSupportedBandBoxName($0.name) }
                 for peripheral in matches {
                     candidates[peripheral.identifier] = peripheral
                     emit("retrieved_connected_target", ["id": peripheral.identifier.uuidString, "name": peripheral.name ?? ""])
                 }
                 if matches.count > 1 {
-                    emit("error", ["message": "Multiple connected BandBox Trio devices; specify an inspected --id."])
+                    emit("error", ["message": "Multiple connected BandBox devices; specify an inspected --id."])
                     finish()
                     return
                 }
@@ -200,7 +221,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                CommandLine.arguments.count > index + 1,
                let id = UUID(uuidString: CommandLine.arguments[index + 1]),
                let peripheral = central.retrievePeripherals(withIdentifiers: [id]).first,
-               peripheral.name == "JBL BandBox Trio" {
+               isSupportedBandBoxName(peripheral.name) {
                 target = peripheral
                 peripheral.delegate = self
                 emit("retrieved_target", ["id": id.uuidString, "name": peripheral.name ?? ""])
@@ -218,11 +239,14 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + min(5.0, seconds / 2)) {
                 guard !self.done, self.target == nil else { return }
                 central.stopScan()
-                guard self.candidates.count == 1, let peripheral = self.candidates.values.first else {
-                    emit("error", ["message": self.candidates.isEmpty
-                        ? "No JBL BandBox Trio found. Enable its Bluetooth discovery."
-                        : "Multiple BandBox Trio devices found; specify an inspected --id."])
+                guard self.candidates.count <= 1 else {
+                    emit("error", ["message": "Multiple BandBox devices found; specify an inspected --id."])
                     self.finish()
+                    return
+                }
+                guard let peripheral = self.candidates.values.first else {
+                    self.anonymousCandidates.sort { $0.rssi > $1.rssi }
+                    self.probeNextAnonymous()
                     return
                 }
                 self.target = peripheral
@@ -233,13 +257,33 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             finish()
         }
     }
+    /// The amp can advertise with no name and no manufacturer data; probe
+    /// such candidates one at a time (strongest RSSI first), connecting and
+    /// checking for the control service, same as tools/bandbox_ctl.py does.
+    func probeNextAnonymous() {
+        guard !done, target == nil else { return }
+        guard !anonymousCandidates.isEmpty else {
+            emit("error", ["message": "No JBL BandBox found. Enable its Bluetooth discovery."])
+            finish()
+            return
+        }
+        let next = anonymousCandidates.removeFirst().peripheral
+        probingAnonymous = next
+        next.delegate = self
+        emit("probing_anonymous", ["id": next.identifier.uuidString])
+        central.connect(next, options: nil)
+    }
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
         seen.insert(peripheral.identifier)
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? ""
         let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []).map(\.uuidString)
         let manufacturer = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data ?? Data()
-        guard name == "JBL BandBox Trio" else { return }
+        if name.isEmpty, manufacturer.isEmpty, target == nil,
+           !anonymousCandidates.contains(where: { $0.peripheral.identifier == peripheral.identifier }) {
+            anonymousCandidates.append((peripheral, RSSI.intValue))
+        }
+        guard isSupportedBandBoxName(name) else { return }
         emit("advertisement", ["name": name, "id": peripheral.identifier.uuidString, "rssi": RSSI,
                                "services": services, "manufacturer_hex": hex(manufacturer),
                                "connectable": advertisementData[CBAdvertisementDataIsConnectable] ?? NSNull()])
@@ -247,19 +291,53 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         candidates[peripheral.identifier] = peripheral
     }
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        if probingAnonymous === peripheral {
+            peripheral.discoverServices([CBUUID(string: "65786365-6C70-6F69-6E74-2E636F6D0000")])
+            return
+        }
         connected = true
         driveConnection = peripheral.identifier.uuidString + ":" + UUID().uuidString
         emit("connected", ["id": peripheral.identifier.uuidString])
         peripheral.discoverServices(nil)
     }
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        if probingAnonymous === peripheral {
+            probingAnonymous = nil
+            probeNextAnonymous()
+            return
+        }
         emit("connection_failed", ["error": error?.localizedDescription ?? "unknown"])
         finish()
     }
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        if ignoredDisconnects.remove(peripheral.identifier) != nil { return }
+        if probingAnonymous === peripheral {
+            probingAnonymous = nil
+            probeNextAnonymous()
+            return
+        }
         if !done { emit("disconnected", ["error": error?.localizedDescription ?? NSNull()]); finish() }
     }
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if probingAnonymous === peripheral {
+            probingAnonymous = nil
+            if error == nil, let services = peripheral.services, !services.isEmpty {
+                target = peripheral
+                emit("retrieved_target", ["id": peripheral.identifier.uuidString, "name": peripheral.name ?? ""])
+                connected = true
+                driveConnection = peripheral.identifier.uuidString + ":" + UUID().uuidString
+                emit("connected", ["id": peripheral.identifier.uuidString])
+                for service in services {
+                    emit("service", ["uuid": service.uuid.uuidString, "primary": service.isPrimary])
+                    peripheral.discoverCharacteristics(nil, for: service)
+                }
+            } else {
+                ignoredDisconnects.insert(peripheral.identifier)
+                central.cancelPeripheralConnection(peripheral)
+                probeNextAnonymous()
+            }
+            return
+        }
         if let error { emit("service_error", ["error": error.localizedDescription]); return }
         for service in peripheral.services ?? [] {
             emit("service", ["uuid": service.uuid.uuidString, "primary": service.isPrimary])
@@ -317,9 +395,10 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             return
         }
         if readCurrent {
-            // JBL One's GuitarPresetSelectQuery(CH3), NOT GuitarPresetSelect.
+            // JBL One's GuitarPresetSelectQuery(channel), NOT GuitarPresetSelect.
             // Semantic read 3441 returns feature3442; command2 is its app transport.
-            let packet = Data([0x00, 0xDD, 0x02, 0x00, 0x01, 0x00, 0x05, 0x00, 0x41, 0x34, 0x01, 0x00, 0x03])
+            // channel is 3 on the Trio, 1 on the Solo (see docs/protocol.md#bandbox-solo).
+            let packet = Data([0x00, 0xDD, 0x02, 0x00, 0x01, 0x00, 0x05, 0x00, 0x41, 0x34, 0x01, 0x00, readCurrentChannel])
             emit("query", ["purpose": "get_channel3_selection_3441", "hex": hex(packet), "setting_write": false])
             peripheral.writeValue(packet, for: tx, type: .withResponse)
             return
@@ -374,7 +453,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
            characteristic.uuid.uuidString == "65786365-6C70-6F69-6E74-2E636F6D0001",
            data.count == 16, data[0] == 0x00, data[1] == 0xDD,
            (data[2] == 1 || data[2] == 3), data[3] == 0,
-           Array(data[4..<15]) == [1, 0, 8, 0, 0, 0, 0x42, 0x34, 2, 0, 3],
+           Array(data[4..<15]) == [1, 0, 8, 0, 0, 0, 0x42, 0x34, 2, 0, readCurrentChannel],
            (1...254).contains(Int(data[15])), let tx {
             detailQueried = true
             queriedPresetID = data[15]
@@ -400,7 +479,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 }
 
 let classicTargets = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? []).filter {
-    $0.name == "JBL BandBox Trio"
+    isSupportedBandBoxName($0.name)
 }
 for device in classicTargets {
     emit("classic_target", ["name": device.name ?? "", "address": device.addressString ?? "",

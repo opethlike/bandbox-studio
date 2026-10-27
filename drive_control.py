@@ -83,8 +83,9 @@ class PendingChanges:
             raise ValueError("A fresh verified selection and saved-metadata read is required.")
         selection = reading["selection"]
         info = reading["preset_info"]
-        if selection["channel"] != 3 or selection["preset_id"] != info["preset_id"]:
+        if selection["channel"] not in (1, 3) or selection["preset_id"] != info["preset_id"]:
             raise ValueError("Selected channel or preset does not match its details.")
+        channel = selection["channel"]
         identifier = str(uuid.UUID(reading["active_corebluetooth_uuid"])).upper()
         slots = [s for s in info["slots"] if s["slot_id"] == 3]
         if len(slots) != 1:
@@ -110,7 +111,7 @@ class PendingChanges:
                 raise ValueError("Recent live report expired or conflicts with this request.")
             baseline_at, baseline_wall = at, wall_at
         self._pending.clear()
-        summary = {"channel": "CH3", "preset_id": selection["preset_id"],
+        summary = {"channel": f"CH{channel}", "preset_id": selection["preset_id"],
                    "preset_name": info["name"], "amp_model": amp_model, "amp_active": amp_active,
                    "from_drive": current_drive, "to_drive": target_drive,
                    "baseline_source": baseline_source,
@@ -118,7 +119,7 @@ class PendingChanges:
         if target_drive == current_drive:
             return {"status": "no_change_needed", **summary}
         token = secrets.token_urlsafe(24)
-        plan = {"device_uuid": identifier, "created_at": baseline_wall,
+        plan = {"device_uuid": identifier, "created_at": baseline_wall, "channel": channel,
                 "preset_id": selection["preset_id"], "slot_id": 3, "algorithm_id": 6,
                 "config_id": amp["config_id"], "bypass_raw": amp["bypass_raw"],
                 "original_float_hex": struct.pack("<f", float(current_drive)).hex().upper(),

@@ -1,10 +1,10 @@
 import struct
 import unittest
 
-from current_query import DETAIL_QUERY_PREFIX, RX, SELECTION_QUERY, current_result
+from current_query import DETAIL_QUERY_PREFIX, RX, selection_query, current_result
 
 
-SELECT_QUERY = {"event": "query", "purpose": "get_channel3_selection_3441", "hex": SELECTION_QUERY}
+SELECT_QUERY = {"event": "query", "purpose": "get_channel3_selection_3441", "hex": selection_query()}
 DETAIL_QUERY = {"event": "query", "purpose": "get_preset_detail_3443", "hex": DETAIL_QUERY_PREFIX + "01"}
 # Saved-detail-shaped fixture: preset1, genre2, Clean, AMP American Clean, Drive25.5.
 DETAIL = bytes.fromhex("010205436C65616E01 0306000001 000000CC41")
@@ -68,8 +68,8 @@ class CurrentQueryTests(unittest.TestCase):
             self.assertFalse(current_result([SELECT_QUERY, SELECT, DETAIL_QUERY, info])["current_preset_read_verified"])
 
     def test_queries_are_exact_and_ordered(self):
-        for first in [{**SELECT_QUERY, "hex": SELECTION_QUERY[:-2] + "01"},
-                      {**SELECT_QUERY, "purpose": "other"}, {**SELECT_QUERY, "hex": SELECTION_QUERY + "00"}]:
+        for first in [{**SELECT_QUERY, "hex": selection_query()[:-2] + "01"},
+                      {**SELECT_QUERY, "purpose": "other"}, {**SELECT_QUERY, "hex": selection_query() + "00"}]:
             self.assertFalse(current_result([first, SELECT, DETAIL_QUERY, INFO])["current_preset_read_verified"])
         for second in [{**DETAIL_QUERY, "hex": DETAIL_QUERY_PREFIX + "02"},
                        {**DETAIL_QUERY, "hex": DETAIL_QUERY_PREFIX},
@@ -148,6 +148,22 @@ class CurrentQueryTests(unittest.TestCase):
         result = current_result([SELECT_QUERY, SELECT, DETAIL_QUERY, INFO, SELECT_QUERY])
         self.assertFalse(result["current_preset_read_verified"])
         self.assertTrue(result["current_read_errors"])
+
+    def test_channel_1_solo_query_and_selection(self):
+        solo_query = {**SELECT_QUERY, "hex": selection_query(1)}
+        solo_select = reply(0x3442, b"\x01\x01")
+        result = current_result([solo_query, solo_select, DETAIL_QUERY, INFO], channel=1)
+        self.assertTrue(result["current_preset_read_verified"])
+        self.assertEqual(result["selection"]["channel"], 1)
+        # The default (channel=3) must reject a channel-1 selection, and vice versa.
+        self.assertFalse(current_result([solo_query, solo_select, DETAIL_QUERY, INFO])
+                          ["current_preset_read_verified"])
+        self.assertFalse(current_result([SELECT_QUERY, SELECT, DETAIL_QUERY, INFO], channel=1)
+                          ["current_preset_read_verified"])
+
+    def test_selection_query_rejects_unsupported_channel(self):
+        with self.assertRaises(ValueError):
+            selection_query(2)
 
 
 if __name__ == "__main__":

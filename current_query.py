@@ -15,17 +15,24 @@ from protocol import decode_frame
 
 
 RX = "65786365-6C70-6F69-6E74-2E636F6D0001"
-SELECTION_QUERY = "00DD0200010005004134010003"
+SELECTION_QUERY_PREFIX = "00DD02000100050041340100"
 DETAIL_QUERY_PREFIX = "00DD02000100050043340100"
 
 
-def current_result(events: list[dict]) -> dict:
+def selection_query(channel: int = 3) -> str:
+    if channel not in (1, 3):
+        raise ValueError("channel must be 1 (Solo) or 3 (Trio)")
+    return SELECTION_QUERY_PREFIX + f"{channel:02X}"
+
+
+def current_result(events: list[dict], channel: int = 3) -> dict:
     """Return a matched selection and app-classified saved preset details.
 
     Unrelated features/channels/preset IDs cannot complete the sequence. A
     malformed or ambiguous response invalidates verification for this event
     batch. Raw source events remain the caller's responsibility to retain.
     """
+    query = selection_query(channel)
     result = {
         "current_preset_read_verified": False,
         "selection": None,
@@ -57,8 +64,8 @@ def current_result(events: list[dict]) -> dict:
                 error("query interrupted an incomplete fragmented response", event)
                 pending = None
             if purpose == "get_channel3_selection_3441":
-                if phase != "before_query" or query_hex != SELECTION_QUERY:
-                    error("invalid or repeated CH3 selection query", event)
+                if phase != "before_query" or query_hex != query:
+                    error("invalid or repeated selection query", event)
                     phase = "invalid"
                 else:
                     phase = "selection"
@@ -117,7 +124,7 @@ def current_result(events: list[dict]) -> dict:
                 raise ValueError("duplicate current-preset feature in one response")
             if selection_values:
                 selected = parse_selection(bytes.fromhex(selection_values[0]["value_hex"]))
-                if selected["channel"] == 3:
+                if selected["channel"] == channel:
                     if phase == "selection":
                         result["selection"] = selected
                         phase = "selected"

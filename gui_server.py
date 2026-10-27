@@ -293,7 +293,7 @@ def create_app(controller=None, *, port=8765, static_root=None, refresh_reader=N
         server.RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
         controller = Controls(server.ROOT, server.RUNTIME, server.lock, server._run_probe,
                               server.active_identifier, invalidate_drive=server.pending_changes.invalidate_all,
-                              preview_max_age=None)
+                              preview_max_age=None, channel=server.CHANNEL)
         server.controls = controller
         async def refresh_reader():
             async with server.lock:

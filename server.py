@@ -11,12 +11,13 @@ from protocol import summarize
 from guitar_protocol import inventory_result
 from current_query import current_result
 from drive_control import PendingChanges, device_lease, validate_request, device_revision, mark_device_changed
-from runtime_config import runtime_directory, pinned_identifier
+from runtime_config import runtime_directory, pinned_identifier, guitar_channel
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = {"name": "JBL BandBox Trio", "service_uuid": "65786365-6C70-6F69-6E74-2E636F6D0000"}
 lock = asyncio.Lock()
 PINNED_ID = pinned_identifier()
+CHANNEL = guitar_channel()
 runtime_id = PINNED_ID
 RUNTIME = runtime_directory()
 pending_changes = PendingChanges(revision=lambda: device_revision(RUNTIME))
@@ -34,7 +35,7 @@ def active_identifier():
     return runtime_id
 
 
-async def native(mode: str, identifier: str | None, seconds: int) -> tuple:
+async def native(mode: str, identifier: str | None, seconds: int, channel: int = CHANNEL) -> tuple:
     args = [str(ROOT / "bin" / "bandbox-probe"), "--seconds", str(seconds)]
     if identifier:
         args += ["--id", identifier]
@@ -43,7 +44,7 @@ async def native(mode: str, identifier: str | None, seconds: int) -> tuple:
     elif mode == "presets":
         args.append("--read-presets")
     elif mode == "current":
-        args.append("--read-current")
+        args += ["--read-current", "--channel", str(channel)]
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=seconds + 5)
@@ -94,14 +95,14 @@ async def _run_probe(mode: str) -> dict:
         result.update(inventory_result(events))
         result["limitation"] = "Preset IDs, genres and names follow JBL One 2.7.9's inventory decoder. Active selection and effect values are not part of this inventory read; this operation changes no settings."
     elif mode == "current":
-        result.update(current_result(events))
+        result.update(current_result(events, channel=CHANNEL))
         result["limitation"] = "The app classifies these details as saved preset information. They are not a verified snapshot of unsaved edits and must not be used alone as a rollback baseline. The two app-proven parameterized reads use command 2, but change no settings."
     if code != 0 or (mode == "state" and not result["query_response_verified"]):
         result["error"] = "Probe did not complete successfully; inspect events for the cause."
     if mode == "presets" and not result["preset_list_verified"]:
         result["error"] = "No complete, valid preset inventory GET reply was received."
     if mode == "current" and not result["current_preset_read_verified"]:
-        result["error"] = "No complete, matched CH3 selection and preset-detail reply was received."
+        result["error"] = "No complete, matched selection and preset-detail reply was received."
     return result
 
 
@@ -233,7 +234,7 @@ def serve() -> None:
     mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False,
                          "idempotentHint": False, "openWorldHint": False})(bandbox_apply_drive_change)
     controls = Controls(ROOT, RUNTIME, lock, _run_probe, active_identifier,
-                        invalidate_drive=pending_changes.invalidate_all)
+                        invalidate_drive=pending_changes.invalidate_all, channel=CHANNEL)
     for name, method, read_only in (
         ("bandbox_effect_catalog", controls.catalog, True),
         ("bandbox_list_controls", controls.list_controls, True),

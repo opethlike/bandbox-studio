@@ -1,6 +1,25 @@
-"""Exercise stdio MCP; optional live flags call read-only device tools."""
+"""Exercise stdio MCP; optional live flags call read-only device tools.
+
+Live writes (deliberate opt-in, each changes something on the amp):
+  --live-select-preset <preset_id>
+  --live-set-effect-parameter <preset_id> <slot_id> <parameter_id> <ui_value>
+  --live-set-mixer-channel-volume <mixer_channel> <level>
+  --live-drive-change <target_drive> <current_drive>
+    Chains prepare_drive_change + apply_drive_change (the AMP-slot
+    decrement/restore round trip). Assumes the AMP block is currently
+    "American Clean" and active -- it is whatever preset is selected
+    right now; adjust the hardcoded amp_model below if that's not it.
+  --live-create-preset <source_preset_id>
+    Duplicates the currently-selected source_preset_id as a new user
+    preset named "Solo CRUD Test". Prints the new preset_id.
+  --live-rename-preset <preset_id>
+    Renames a USER preset (ID 51+) to "Solo CRUD Renamed".
+  --live-save-user-preset <preset_id>
+    Saves current live edits into a USER preset (ID 51+).
+"""
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -10,8 +29,23 @@ from mcp.client.stdio import stdio_client
 ROOT = Path(__file__).resolve().parent
 
 
+async def live_write(session, output, name, args, verified_key="verified"):
+    result = await session.call_tool(name, args)
+    assert not result.isError, result
+    data = json.loads(next(c.text for c in result.content if c.type == "text"))
+    output["results"][name] = data
+    if not data.get(verified_key):
+        output.setdefault("failed_tools", []).append(name)
+    return data
+
+
 async def main():
-    params = StdioServerParameters(command=sys.executable, args=[str(ROOT / "server.py")])
+    # The mcp SDK's StdioServerParameters doesn't inherit the caller's
+    # environment by default (only a fixed safe-list) -- forward it
+    # explicitly so BANDBOX_GUITAR_CHANNEL/BANDBOX_DEVICE_UUID/etc. reach
+    # server.py the same way they would through any real MCP client config.
+    params = StdioServerParameters(command=sys.executable, args=[str(ROOT / "server.py")],
+                                   env=dict(os.environ))
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             init = await session.initialize()
@@ -52,6 +86,57 @@ async def main():
                             or (name == "bandbox_read_current_preset" and not data["current_preset_read_verified"])):
                         failures.append(name)
                 output["failed_tools"] = failures
+            if "--live-select-preset" in sys.argv:
+                i = sys.argv.index("--live-select-preset")
+                preset_id = int(sys.argv[i + 1])
+                await live_write(session, output, "bandbox_select_preset", {"preset_id": preset_id})
+            if "--live-set-effect-parameter" in sys.argv:
+                i = sys.argv.index("--live-set-effect-parameter")
+                preset_id, slot_id, parameter_id, ui_value = (int(a) for a in sys.argv[i + 1:i + 5])
+                await live_write(session, output, "bandbox_set_effect_parameter",
+                                 {"expected_preset_id": preset_id, "slot_id": slot_id,
+                                  "parameter_id": parameter_id, "ui_value": ui_value,
+                                  "confirm_saved_settings": True})
+            if "--live-set-mixer-channel-volume" in sys.argv:
+                i = sys.argv.index("--live-set-mixer-channel-volume")
+                mixer_channel, level = (int(a) for a in sys.argv[i + 1:i + 3])
+                await live_write(session, output, "bandbox_set_mixer_volume",
+                                 {"scope": "channel", "level": level, "channel": mixer_channel})
+            if "--live-drive-change" in sys.argv:
+                i = sys.argv.index("--live-drive-change")
+                target_drive, current_drive = (int(a) for a in sys.argv[i + 1:i + 3])
+                prepared = await session.call_tool("bandbox_prepare_drive_change", {
+                    "target_drive": target_drive, "current_drive": current_drive,
+                    "amp_model": "American Clean", "amp_active": True})
+                assert not prepared.isError, prepared
+                prep_data = json.loads(next(c.text for c in prepared.content if c.type == "text"))
+                output["results"]["bandbox_prepare_drive_change"] = prep_data
+                if prep_data.get("status") == "prepared":
+                    await live_write(session, output, "bandbox_apply_drive_change",
+                                     {"change_token": prep_data["change_token"]},
+                                     verified_key="change_verified")
+                else:
+                    output.setdefault("failed_tools", []).append("bandbox_prepare_drive_change")
+            if "--live-create-preset" in sys.argv:
+                i = sys.argv.index("--live-create-preset")
+                source_preset_id = int(sys.argv[i + 1])
+                await live_write(session, output, "bandbox_create_preset",
+                                 {"source_preset_id": source_preset_id, "name": "Solo CRUD Test", "genre": 0})
+            if "--live-rename-preset" in sys.argv:
+                i = sys.argv.index("--live-rename-preset")
+                preset_id = int(sys.argv[i + 1])
+                await live_write(session, output, "bandbox_rename_preset",
+                                 {"preset_id": preset_id, "name": "Solo CRUD Renamed"})
+            if "--live-save-user-preset" in sys.argv:
+                i = sys.argv.index("--live-save-user-preset")
+                preset_id = int(sys.argv[i + 1])
+                # save_user_preset's content verification needs this process's
+                # own in-memory preview, established by selecting the preset
+                # first in this same session -- a separate process/invocation
+                # (e.g. an earlier --live-select-preset) doesn't share it.
+                await live_write(session, output, "bandbox_select_preset", {"preset_id": preset_id})
+                await live_write(session, output, "bandbox_save_user_preset",
+                                 {"expected_preset_id": preset_id})
             print(json.dumps(output, indent=2))
             if output.get("failed_tools"):
                 raise SystemExit(1)

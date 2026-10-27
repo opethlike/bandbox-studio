@@ -29,11 +29,14 @@ def serialized(method):
 
 class Controls:
     def __init__(self, root, state, lock, read, identifier, invalidate_drive=None,
-                 preview_max_age=120):
+                 preview_max_age=120, channel=3):
+        if channel not in (1, 3):
+            raise ValueError("channel must be 1 (Solo) or 3 (Trio)")
         self.root, self.state, self.lock = Path(root), Path(state), lock
         self.read, self.identifier = read, identifier
         self.invalidate_drive = invalidate_drive
         self.preview_max_age = preview_max_age
+        self.channel = channel
         self.preview = None
 
     def preview_valid(self):
@@ -222,8 +225,8 @@ class Controls:
         """Load the user's requested saved preset on CH3. This replaces the active preview. Does not save, overwrite or delete presets."""
         if preset_id not in {p["preset_id"] for p in await self.inventory()}:
             raise ValueError("That preset ID is not in the amp inventory.")
-        action = presets.select(3, preset_id)
-        result = await self.exchange(action, lambda raw: raw.upper() == bytes([3, preset_id]).hex().upper())
+        action = presets.select(self.channel, preset_id)
+        result = await self.exchange(action, lambda raw: raw.upper() == bytes([self.channel, preset_id]).hex().upper())
         if result["verified"]:
             try:
                 current = await self.current()
@@ -279,19 +282,19 @@ class Controls:
     @serialized
     async def create_preset(self, source_preset_id: int, name: str, genre: int = 0) -> dict:
         """Create a new preset by duplicating an existing one, preserving the source. Device assigns its ID. Does not activate it; select the returned new ID separately, edit effects, then save that user preset."""
-        return await self.preset_operation(presets.duplicate(3, source_preset_id, name, genre))
+        return await self.preset_operation(presets.duplicate(self.channel, source_preset_id, name, genre))
 
     @serialized
     async def save_as(self, expected_preset_id: int, name: str, genre: int = 0) -> dict:
         """Save the current CH3 preview into a new named preset. Preserves the source preset; device assigns the new ID. Requires the expected preset still selected."""
         current = await self.current()
         if current["selection"]["preset_id"] != expected_preset_id: raise ValueError("Selected preset changed")
-        return await self.preset_operation(presets.save_as(3, expected_preset_id, name, genre))
+        return await self.preset_operation(presets.save_as(self.channel, expected_preset_id, name, genre))
 
     @serialized
     async def save_user_preset(self, expected_preset_id: int) -> dict:
         """Persist the user's requested edits to the selected USER preset (ID51+). Overwrites that user's saved settings. Factory presets are protected; use save_as to preserve a source."""
-        action = presets.save_user_preset(3, expected_preset_id)
+        action = presets.save_user_preset(self.channel, expected_preset_id)
         current = await self.current()
         if current["selection"]["preset_id"] != expected_preset_id: raise ValueError("Selected preset changed")
         expected = copy.deepcopy(self.preview["info"]) if (self.preview_valid() and
@@ -321,7 +324,7 @@ class Controls:
     async def rename_preset(self, preset_id: int, name: str) -> dict:
         """Rename a USER preset (ID51+) without changing its sound. Factory names are protected."""
         if type(preset_id) is not int or preset_id < 51: raise ValueError("Only user presets can be renamed")
-        result = await self.preset_operation(presets.rename(3, preset_id, name))
+        result = await self.preset_operation(presets.rename(self.channel, preset_id, name))
         if result["verified"] and self.preview and self.preview["info"]["preset_id"] == preset_id:
             self.preview["info"]["name"] = name
         return result
@@ -334,7 +337,7 @@ class Controls:
         slot = next((s for s in info["slots"] if s["slot_id"] == slot_id), None)
         if slot is None: raise ValueError("Slot does not exist")
         model = f'{slot["algorithm_id"]}:{slot["config_id"]}'
-        action = effects.set_parameter(3, expected_preset_id, slot_id, model, parameter_id,
+        action = effects.set_parameter(self.channel, expected_preset_id, slot_id, model, parameter_id,
                                        ui_value, slot["bypass_raw"] == 0, slot)
         return await self.effect(action)
 
@@ -346,7 +349,7 @@ class Controls:
         slot = next((s for s in info["slots"] if s["slot_id"] == slot_id), None)
         if slot is None: raise ValueError("Slot does not exist")
         old = f'{slot["algorithm_id"]}:{slot["config_id"]}'
-        return await self.effect(effects.set_model(3, expected_preset_id, slot_id, old, model_id))
+        return await self.effect(effects.set_model(self.channel, expected_preset_id, slot_id, old, model_id))
 
     @serialized
     async def set_effect_active(self, expected_preset_id: int, slot_id: int, active: bool,
@@ -356,7 +359,7 @@ class Controls:
         slot = next((s for s in info["slots"] if s["slot_id"] == slot_id), None)
         if slot is None: raise ValueError("Slot does not exist")
         model = f'{slot["algorithm_id"]}:{slot["config_id"]}'
-        return await self.effect(effects.set_bypass(3, expected_preset_id, slot_id, model, active, slot))
+        return await self.effect(effects.set_bypass(self.channel, expected_preset_id, slot_id, model, active, slot))
 
     @serialized
     async def read_tool(self, control: str, channel: int | None = None,
