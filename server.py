@@ -29,6 +29,15 @@ def active_identifier():
     if PINNED_ID:
         return PINNED_ID
     try:
+        cached_channel = (RUNTIME / "device-channel.txt").read_text().strip()
+        if cached_channel and int(cached_channel) != CHANNEL:
+            # The cached device was discovered under a different
+            # BANDBOX_GUITAR_CHANNEL; it may be a still-reachable amp of the
+            # other model. Force rediscovery instead of reusing its UUID.
+            return None
+    except (OSError, ValueError):
+        pass
+    try:
         runtime_id = str(uuid.UUID((RUNTIME / "device-id.txt").read_text().strip())).upper()
     except (OSError, ValueError):
         pass
@@ -39,6 +48,12 @@ async def native(mode: str, identifier: str | None, seconds: int, channel: int =
     args = [str(ROOT / "bin" / "bandbox-probe"), "--seconds", str(seconds)]
     if identifier:
         args += ["--id", identifier]
+    elif mode == "inspect" and channel == 1:
+        # The Solo can advertise anonymously; BANDBOX_GUITAR_CHANNEL=1 is the
+        # user's explicit local configuration for one, so it doubles as
+        # consent to probe nearby unnamed devices for the control service
+        # during discovery. See BandBoxProbe.swift's --allow-anonymous.
+        args.append("--allow-anonymous")
     if mode == "state":
         args.append("--read-state")
     elif mode == "presets":
@@ -80,6 +95,7 @@ async def _run_probe(mode: str) -> dict:
             runtime_id = next(e["id"] for e in discovery if e.get("event") == "connected")
             RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
             (RUNTIME / "device-id.txt").write_text(runtime_id + "\n")
+            (RUNTIME / "device-channel.txt").write_text(str(CHANNEL) + "\n")
             if mode in ("state", "presets", "current"):
                 code, events, stderr = await native(mode, runtime_id, 12)
             else:

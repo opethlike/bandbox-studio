@@ -29,11 +29,18 @@ let driveSetRequested = arg("--set-drive-plan") != nil
 let driveControlRequested = driveTestRequested || driveSetRequested
 let controlRequested = arg("--control-plan") != nil
 let queryRequested = readState || readPresets || readCurrent || driveControlRequested || controlRequested
+// The control service UUID is public (it's in this repo's own docs), so a
+// nearby device advertising it is not proof it's the user's amp. Anonymous
+// candidates (no name, no manufacturer data) are only probed when the
+// caller explicitly opts in; the confirmed UUID should then be pinned via
+// --id / BANDBOX_DEVICE_UUID for later queries instead of re-trusting any
+// anonymous advertiser on every run.
+let allowAnonymous = CommandLine.arguments.contains("--allow-anonymous")
 let maximumSeconds = listenOnly ? 300.0 : 60.0
 guard (1...maximumSeconds).contains(seconds), (!driveControlRequested || seconds >= 45), (!controlRequested || seconds >= 12), [listenOnly, readState, readPresets, readCurrent, driveTestRequested, driveSetRequested, controlRequested].filter({ $0 }).count <= 1, !CommandLine.arguments.contains("--query-version"),
       arg("--id") == nil || UUID(uuidString: arg("--id")!) != nil,
       !readCurrent || readCurrentChannel == 1 || readCurrentChannel == 3 else {
-    fputs("Usage: bandbox-probe [--id UUID] [--seconds 1..60 (1..300 for --listen)] [--read-state|--read-presets|--read-current [--channel 1|3]|--listen|--drive-test-plan FILE|--set-drive-plan FILE (45..60 seconds)]\n", stderr)
+    fputs("Usage: bandbox-probe [--id UUID] [--allow-anonymous] [--seconds 1..60 (1..300 for --listen)] [--read-state|--read-presets|--read-current [--channel 1|3]|--listen|--drive-test-plan FILE|--set-drive-plan FILE (45..60 seconds)]\n", stderr)
     exit(2)
 }
 guard !queryRequested || arg("--id") != nil else {
@@ -245,6 +252,11 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                     return
                 }
                 guard let peripheral = self.candidates.values.first else {
+                    guard allowAnonymous else {
+                        emit("error", ["message": "No named BandBox found. The amp can advertise anonymously; pass --allow-anonymous to probe nearby unnamed devices for the control service (only do this if you're sure no one else's device is nearby), then pin the confirmed UUID via --id for future runs."])
+                        self.finish()
+                        return
+                    }
                     self.anonymousCandidates.sort { $0.rssi > $1.rssi }
                     self.probeNextAnonymous()
                     return
@@ -323,7 +335,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             probingAnonymous = nil
             if error == nil, let services = peripheral.services, !services.isEmpty {
                 target = peripheral
-                emit("retrieved_target", ["id": peripheral.identifier.uuidString, "name": peripheral.name ?? ""])
+                emit("retrieved_target", ["id": peripheral.identifier.uuidString, "name": peripheral.name ?? "", "anonymous": true])
                 connected = true
                 driveConnection = peripheral.identifier.uuidString + ":" + UUID().uuidString
                 emit("connected", ["id": peripheral.identifier.uuidString])

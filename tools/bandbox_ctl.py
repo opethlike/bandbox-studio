@@ -22,6 +22,13 @@ Any command accepts --wait <seconds> to change how long it listens for
 notifications after the write (default 4.0) -- useful to rule out a slow
 reply before concluding a feature just doesn't answer.
 
+If the amp advertises with no name (observed on some Solo units), pass
+--allow-anonymous to probe nearby unnamed devices for the control service.
+The control service UUID is public (it's documented above), so this trusts
+whichever nearby device answers it; only use it when you're sure no one
+else's BLE device is nearby, and prefer pinning the confirmed address
+afterwards over repeating anonymous probing on every run.
+
 Requires the amp already powered on and advertising (not connected to a
 phone's JBL One at the same time — BLE peripherals here only take one
 central connection).
@@ -35,6 +42,7 @@ SERVICE_UUID = "65786365-6c70-6f69-6e74-2e636f6d0000"
 WRITE_CHAR = "65786365-6c70-6f69-6e74-2e636f6d0002"
 NOTIFY_CHAR = "65786365-6c70-6f69-6e74-2e636f6d0001"
 NAME_FILTER = "bandbox"  # case-insensitive substring; override with --name
+ALLOW_ANONYMOUS = False  # opt-in via --allow-anonymous; see find_amp_client()
 
 LOOPER_ID = bytes.fromhex("4031")  # 0x3140 LE
 LOOPER_PLAYBACK_ID = bytes.fromhex("4531")  # 0x3145 LE
@@ -78,6 +86,15 @@ async def find_amp_client() -> BleakClient:
     for device, adv in matches:
         print(f"  found {device.name or adv.local_name!r} {device.address} rssi={adv.rssi}")
     if not matches:
+        # The control service UUID is public (it's in this file's own header),
+        # so a nearby device advertising it is not proof it's the user's amp.
+        # Only probe anonymous candidates (no name, no manufacturer data) when
+        # explicitly asked to with --allow-anonymous.
+        if not ALLOW_ANONYMOUS:
+            sys.exit("no named BandBox found — the amp can advertise anonymously; "
+                      "pass --allow-anonymous to probe nearby unnamed devices for "
+                      "the control service (only if you're sure no one else's "
+                      "device is nearby)")
         # Observed: the amp can advertise with no name and no manufacturer data.
         # Probe such devices (strongest first) for the control service.
         anon = sorted(
@@ -172,12 +189,15 @@ async def scanall():
 
 
 def main():
-    global NAME_FILTER
+    global NAME_FILTER, ALLOW_ANONYMOUS
     args = sys.argv[1:]
     if "--name" in args:
         i = args.index("--name")
         NAME_FILTER = args[i + 1].lower()
         del args[i:i + 2]
+    if "--allow-anonymous" in args:
+        ALLOW_ANONYMOUS = True
+        args.remove("--allow-anonymous")
     wait = 4.0
     if "--wait" in args:
         i = args.index("--wait")

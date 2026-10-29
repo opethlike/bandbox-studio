@@ -59,6 +59,20 @@ cache is ever absent, `server.py`'s existing discovery-recovery path
 fails) already falls back to a full scan, which goes through the
 anonymous path again -- no special-casing needed there.
 
+**The control service UUID is public** (it's printed in this file and in
+`tools/bandbox_ctl.py`'s header), so a nearby device advertising it is not
+proof it's the user's own amp -- a spoofed peripheral exposing the same
+UUID would be accepted just as readily. For that reason the anonymous
+fallback only runs when the caller opts in: `bandbox-probe --allow-anonymous`
+(CLI), `--allow-anonymous` to `tools/bandbox_ctl.py`, or, for the MCP
+server and GUI, setting `BANDBOX_GUITAR_CHANNEL=1` -- configuring a Solo is
+itself treated as consent to probe anonymous candidates during discovery,
+since that's the only reason to need the fallback. Trio setups
+(`BANDBOX_GUITAR_CHANNEL=3`, the default) never probe anonymous candidates.
+Once a device has been confirmed once (named or anonymous), pin its
+CoreBluetooth UUID with `BANDBOX_DEVICE_UUID` / `--id` rather than relying
+on fresh anonymous probing on every run.
+
 The looper (features `0x3140`/`0x3145`, no channel byte at all) was also
 confirmed directly against a Solo via `tools/bandbox_ctl.py`: start, stop
 (ends recording and starts playback immediately, same as the Trio), pause,

@@ -139,6 +139,24 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         native.assert_awaited_once_with("inspect", IDENTIFIER, 12)
         self.assertEqual(result["active_corebluetooth_uuid"], IDENTIFIER)
 
+    async def test_cached_device_is_ignored_when_channel_changed(self):
+        # A device cached while BANDBOX_GUITAR_CHANNEL=3 (e.g. a reachable
+        # Trio) must not be reused once the configured channel changes to 1;
+        # otherwise channel-1 reads/writes would silently target that amp.
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        (server.RUNTIME / "device-channel.txt").write_text("3")
+        other_id = "99999999-8888-7777-6666-555555555555"
+        other_discovery = [
+            {"event": "connected", "id": other_id},
+            {"event": "service", "uuid": server.CONFIG["service_uuid"]},
+        ]
+        native = AsyncMock(return_value=(0, other_discovery, ""))
+        with patch.object(server, "CHANNEL", 1), patch.object(server, "native", native):
+            result = await server.run_probe("inspect")
+        native.assert_awaited_once_with("inspect", None, 30)
+        self.assertEqual(result["active_corebluetooth_uuid"], other_id)
+        self.assertEqual((server.RUNTIME / "device-channel.txt").read_text().strip(), "1")
+
 
 if __name__ == "__main__":
     unittest.main()
