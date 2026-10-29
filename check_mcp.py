@@ -15,7 +15,10 @@ Live writes (deliberate opt-in, each changes something on the amp):
   --live-rename-preset <preset_id>
     Renames a USER preset (ID 51+) to "Solo CRUD Renamed".
   --live-save-user-preset <preset_id>
-    Saves current live edits into a USER preset (ID 51+).
+    Saves current live edits into a USER preset (ID 51+). The preset must
+    already be selected (combine with --live-select-preset or an edit flag
+    earlier in the same command, or select it on the amp first) -- this
+    does not select it itself, since that would discard pending edits.
 """
 import asyncio
 import json
@@ -130,11 +133,16 @@ async def main():
             if "--live-save-user-preset" in sys.argv:
                 i = sys.argv.index("--live-save-user-preset")
                 preset_id = int(sys.argv[i + 1])
-                # save_user_preset's content verification needs this process's
-                # own in-memory preview, established by selecting the preset
-                # first in this same session -- a separate process/invocation
-                # (e.g. an earlier --live-select-preset) doesn't share it.
-                await live_write(session, output, "bandbox_select_preset", {"preset_id": preset_id})
+                # Do NOT select the preset here: selecting reloads it from the
+                # device and replaces the in-memory preview, so if this same
+                # invocation already made live edits (--live-set-effect-
+                # parameter etc.), reselecting would discard them and save
+                # the unedited, reloaded content instead -- while still
+                # reporting success. The preset must already be selected
+                # (combine with --live-select-preset or an edit flag earlier
+                # in this same command, or have it selected on the amp
+                # itself); otherwise this intentionally fails rather than
+                # silently reselecting over pending edits.
                 await live_write(session, output, "bandbox_save_user_preset",
                                  {"expected_preset_id": preset_id})
             print(json.dumps(output, indent=2))

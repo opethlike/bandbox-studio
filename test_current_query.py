@@ -4,7 +4,12 @@ import unittest
 from current_query import DETAIL_QUERY_PREFIX, RX, selection_query, current_result
 
 
-SELECT_QUERY = {"event": "query", "purpose": "get_channel3_selection_3441", "hex": selection_query()}
+# Hex literals below are independently spelled out from docs/protocol.md's
+# byte layout (confirmed against BandBoxProbe.swift's packet construction),
+# not derived from selection_query() -- so a bug in that encoder can't
+# silently match itself here via current_result()'s internal comparison.
+SELECT_QUERY = {"event": "query", "purpose": "get_channel_selection_3441",
+                "hex": "00DD0200010005004134010003"}
 DETAIL_QUERY = {"event": "query", "purpose": "get_preset_detail_3443", "hex": DETAIL_QUERY_PREFIX + "01"}
 # Saved-detail-shaped fixture: preset1, genre2, Clean, AMP American Clean, Drive25.5.
 DETAIL = bytes.fromhex("010205436C65616E01 0306000001 000000CC41")
@@ -150,7 +155,7 @@ class CurrentQueryTests(unittest.TestCase):
         self.assertTrue(result["current_read_errors"])
 
     def test_channel_1_solo_query_and_selection(self):
-        solo_query = {**SELECT_QUERY, "hex": selection_query(1)}
+        solo_query = {**SELECT_QUERY, "hex": "00DD0200010005004134010001"}
         solo_select = reply(0x3442, b"\x01\x01")
         result = current_result([solo_query, solo_select, DETAIL_QUERY, INFO], channel=1)
         self.assertTrue(result["current_preset_read_verified"])

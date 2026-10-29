@@ -2,7 +2,11 @@
 """Send confirmed control commands directly to the JBL BandBox (Trio or
 Solo) over BLE, bypassing JBL One. Useful for validating protocol commands
 directly against hardware, independent of the Swift/CoreBluetooth helper.
-Uses bleak (already installed), CoreBluetooth backend on macOS.
+
+This standalone tool is not part of the main server/GUI install and needs
+its own dependency, not listed in requirements.txt:
+    python3 -m pip install bleak
+It uses bleak's CoreBluetooth backend on macOS.
 
 Service/characteristic UUIDs (see docs/protocol.md for the full feature-ID
 table and byte layouts; vendor base UUID leaks "excelpoint.com", the BLE
@@ -36,7 +40,10 @@ central connection).
 import asyncio
 import sys
 
-from bleak import BleakClient, BleakScanner
+try:
+    from bleak import BleakClient, BleakScanner
+except ModuleNotFoundError:
+    sys.exit("bleak is required for this tool: python3 -m pip install bleak")
 
 SERVICE_UUID = "65786365-6c70-6f69-6e74-2e636f6d0000"
 WRITE_CHAR = "65786365-6c70-6f69-6e74-2e636f6d0002"

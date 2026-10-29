@@ -54,7 +54,7 @@ def current_result(events: list[dict], channel: int = 3) -> dict:
         if event.get("event") == "query":
             purpose = event.get("purpose")
             query_hex = event.get("hex")
-            if purpose not in ("get_channel3_selection_3441", "get_preset_detail_3443"):
+            if purpose not in ("get_channel_selection_3441", "get_preset_detail_3443"):
                 if phase != "before_query":
                     error("unexpected query interrupted current-preset read", event)
                     pending = None
@@ -63,7 +63,7 @@ def current_result(events: list[dict], channel: int = 3) -> dict:
             if pending is not None:
                 error("query interrupted an incomplete fragmented response", event)
                 pending = None
-            if purpose == "get_channel3_selection_3441":
+            if purpose == "get_channel_selection_3441":
                 if phase != "before_query" or query_hex != query:
                     error("invalid or repeated selection query", event)
                     phase = "invalid"

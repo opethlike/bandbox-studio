@@ -227,8 +227,14 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             if let index = CommandLine.arguments.firstIndex(of: "--id"),
                CommandLine.arguments.count > index + 1,
                let id = UUID(uuidString: CommandLine.arguments[index + 1]),
-               let peripheral = central.retrievePeripherals(withIdentifiers: [id]).first,
-               isSupportedBandBoxName(peripheral.name) {
+               let peripheral = central.retrievePeripherals(withIdentifiers: [id]).first {
+                // CoreBluetooth already requires having seen this exact UUID
+                // before to return it here; an explicitly pinned identifier
+                // is the strongest identity signal this tool has, so don't
+                // also require a cached name (absent for an anonymously-
+                // advertising Solo pinned on a previous run). The control
+                // service is still required downstream for a query to
+                // actually produce anything (see discoverCharacteristics).
                 target = peripheral
                 peripheral.delegate = self
                 emit("retrieved_target", ["id": id.uuidString, "name": peripheral.name ?? ""])
@@ -236,7 +242,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                 return
             }
             if arg("--id") != nil {
-                emit("error", ["message": "The inspected UUID is unavailable or its name no longer matches."])
+                emit("error", ["message": "The inspected UUID is unavailable."])
                 finish()
                 return
             }
@@ -284,6 +290,19 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         next.delegate = self
         emit("probing_anonymous", ["id": next.identifier.uuidString])
         central.connect(next, options: nil)
+        // An unrelated peripheral that never calls back (connect or service
+        // discovery silently stalls) must not consume the whole --seconds
+        // budget before the real amp is ever tried. ignoredDisconnects also
+        // marks the identifier so a late/stale callback after we've moved on
+        // is swallowed instead of being mistaken for the real target.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+            guard let self, !self.done, self.probingAnonymous === next else { return }
+            emit("probing_anonymous_timeout", ["id": next.identifier.uuidString])
+            self.ignoredDisconnects.insert(next.identifier)
+            self.probingAnonymous = nil
+            self.central.cancelPeripheralConnection(next)
+            self.probeNextAnonymous()
+        }
     }
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
@@ -307,6 +326,12 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             peripheral.discoverServices([CBUUID(string: "65786365-6C70-6F69-6E74-2E636F6D0000")])
             return
         }
+        if ignoredDisconnects.contains(peripheral.identifier) {
+            // A stale success for a candidate probeNextAnonymous already gave
+            // up on (see its watchdog); don't treat it as the real target.
+            central.cancelPeripheralConnection(peripheral)
+            return
+        }
         connected = true
         driveConnection = peripheral.identifier.uuidString + ":" + UUID().uuidString
         emit("connected", ["id": peripheral.identifier.uuidString])
@@ -318,6 +343,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             probeNextAnonymous()
             return
         }
+        if ignoredDisconnects.contains(peripheral.identifier) { return }
         emit("connection_failed", ["error": error?.localizedDescription ?? "unknown"])
         finish()
     }
@@ -350,6 +376,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             }
             return
         }
+        if ignoredDisconnects.contains(peripheral.identifier) { return }
         if let error { emit("service_error", ["error": error.localizedDescription]); return }
         for service in peripheral.services ?? [] {
             emit("service", ["uuid": service.uuid.uuidString, "primary": service.isPrimary])
@@ -411,7 +438,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             // Semantic read 3441 returns feature3442; command2 is its app transport.
             // channel is 3 on the Trio, 1 on the Solo (see docs/protocol.md#bandbox-solo).
             let packet = Data([0x00, 0xDD, 0x02, 0x00, 0x01, 0x00, 0x05, 0x00, 0x41, 0x34, 0x01, 0x00, readCurrentChannel])
-            emit("query", ["purpose": "get_channel3_selection_3441", "hex": hex(packet), "setting_write": false])
+            emit("query", ["purpose": "get_channel_selection_3441", "hex": hex(packet), "setting_write": false])
             peripheral.writeValue(packet, for: tx, type: .withResponse)
             return
         }

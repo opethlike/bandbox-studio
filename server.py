@@ -9,15 +9,18 @@ from typing import Literal
 
 from protocol import summarize
 from guitar_protocol import inventory_result
+from current_preset import CHANNEL_LABELS
 from current_query import current_result
 from drive_control import PendingChanges, device_lease, validate_request, device_revision, mark_device_changed
 from runtime_config import runtime_directory, pinned_identifier, guitar_channel
 
 ROOT = Path(__file__).resolve().parent
-CONFIG = {"name": "JBL BandBox Trio", "service_uuid": "65786365-6C70-6F69-6E74-2E636F6D0000"}
 lock = asyncio.Lock()
 PINNED_ID = pinned_identifier()
 CHANNEL = guitar_channel()
+CHANNEL_LABEL = CHANNEL_LABELS[CHANNEL]
+CONFIG = {"name": "JBL BandBox Solo" if CHANNEL == 1 else "JBL BandBox Trio",
+          "service_uuid": "65786365-6C70-6F69-6E74-2E636F6D0000"}
 runtime_id = PINNED_ID
 RUNTIME = runtime_directory()
 pending_changes = PendingChanges(revision=lambda: device_revision(RUNTIME))
@@ -243,10 +246,17 @@ def serve() -> None:
     from mcp.server.fastmcp import FastMCP
     from controls import Controls
 
-    mcp = FastMCP("JBL BandBox Trio", instructions="Control CH3 presets and effects plus onboard tools. Read the effect/control catalogs for supported names and ranges. Saved preset reads do not capture unsaved edits. Select a preset through MCP before editing, or obtain explicit confirmation that live settings match saved settings. Create a separate preset for new tones, edit it, and save that user preset. Report physical/app changes so cached previews are not reused. Never retry an uncertain mutation. No firmware, reset, deletion, or loop discard tools are exposed.")
+    def chan_aware(doc: str) -> str:
+        # Tool/server descriptions are written against the Trio's CH3; make
+        # them reflect whichever channel BANDBOX_GUITAR_CHANNEL configures,
+        # so Solo (CH1) callers aren't told they're talking to CH3/a Trio.
+        return doc.replace("CH3", CHANNEL_LABEL)
+
+    mcp = FastMCP(CONFIG["name"], instructions=chan_aware("Control CH3 presets and effects plus onboard tools. Read the effect/control catalogs for supported names and ranges. Saved preset reads do not capture unsaved edits. Select a preset through MCP before editing, or obtain explicit confirmation that live settings match saved settings. Create a separate preset for new tones, edit it, and save that user preset. Report physical/app changes so cached previews are not reused. Never retry an uncertain mutation. No firmware, reset, deletion, or loop discard tools are exposed."))
     for tool in (bandbox_inspect, bandbox_read_state, bandbox_list_presets, bandbox_read_current_preset,
                  bandbox_prepare_drive_change):
-        mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})(tool)
+        mcp.tool(description=chan_aware(tool.__doc__),
+                annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})(tool)
     mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False,
                          "idempotentHint": False, "openWorldHint": False})(bandbox_apply_drive_change)
     controls = Controls(ROOT, RUNTIME, lock, _run_probe, active_identifier,
@@ -268,7 +278,8 @@ def serve() -> None:
         ("bandbox_set_effect_model", controls.set_effect_model, False),
         ("bandbox_set_effect_active", controls.set_effect_active, False),
     ):
-        mcp.tool(name=name, annotations={"readOnlyHint": read_only,
+        mcp.tool(name=name, description=chan_aware(method.__doc__),
+            annotations={"readOnlyHint": read_only,
             "destructiveHint": name == "bandbox_save_user_preset", "idempotentHint": False,
             "openWorldHint": False})(method)
     mcp.run(transport="stdio")
