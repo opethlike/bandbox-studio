@@ -7,7 +7,7 @@ The repository contains the project's implementation and protocol descriptions. 
 ## Protocol references
 
 - [OpenJBL protocol notes](https://github.com/NiceDayZc/openjbl/blob/e6111667eaab8ee5816345605ac212f8d7d14725/docs/PROTOCOL.md), by the OpenJBL contributors, provided a reference for JBL's BLE service and Protocol 4 framing. Its portable-speaker commands are not treated as proof of BandBox compatibility.
-- [JBL One](https://storage.harman.com/release/jblone/appqrcode/jbloneglobal.html) version 2.7.9 was examined to understand BandBox command formats and UI parameter mappings. Protocol knowledge was implemented in the project's own Python and Swift code. No proprietary app code is included.
+- [JBL One](https://storage.harman.com/release/jblone/appqrcode/jbloneglobal.html) versions 2.7.9 and 2.1.16 were examined to understand BandBox command formats and UI parameter mappings. Protocol knowledge was implemented in the project's own Python and Swift code. No proprietary app code is included.
 - [JBL BandBox Trio product information](https://www.jbl.com/BANDBOX-TRIO.html) identifies the target device.
 
 ## Runtime dependencies
