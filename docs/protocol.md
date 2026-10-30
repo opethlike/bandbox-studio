@@ -253,10 +253,30 @@ Command `1` carries GET responses, command `2` carries requests that include bot
 | `0x3446` | User-preset operations |
 | `0x3400` / `0x3401` | Channel input query / response |
 | `0x3405` / `0x3406` | Mixer level query / response and change |
-| `0x300x`, `0x304x`, `0x310x`, `0x314x` | Drum, metronome, tuner, and looper families; only named controls are exposed |
+| `0x300x`, `0x304x`, `0x310x`, `0x314x` | Drum, metronome, tuner, and looper families; only named controls are exposed. See "Tuner session" for the live tuner |
+| `0x3803` / `0x3804` | Page-in-use query / status (page 1 tuner, 2 looper, 3 drum, 4 metronome; state 0 none, 1 device, 2 app) |
+| `0x0002` | Heartbeat notification from the amp; the host echoes it with command 4 |
 | `0x000D` | Raw status mapped to battery in JBL One; not independently compared to a battery display |
 
 `onboard_controls.py` defines the actual supported subsets, ranges, and reply decoders. `effect_catalog.json` defines 44 models and their UI parameter ranges. `ControlRequest.swift` provides a separate native request allowlist.
+
+## Tuner session
+
+Found by examining JBL One 2.1.16 (`TunerViewModel`, `V5GattSession`) and tested on a Trio from an ESP32-S3 BLE central (the `chocolate-plus` bridge). Writing `0x3100 = 1` alone is acknowledged but does nothing: the amp reads back 0 and sends no measurements. The app does this instead:
+
+1. Set `0x3804 = [1, 2]` (tuner page, in use by the app). The amp then reports page 1 as state 2.
+2. Read `0x3102` (instrument), `0x3101` (string mode), `0x3104` (tuning), `0x3103` (reference pitch). The amp answers all four in one notification.
+3. Set `0x3100 = 1`. Reading `0x3100` now returns 1.
+4. The amp streams `0x3106` notifications about ten times a second, in command 3 frames:
+   `f32 frequency (Hz) | u8 string | f32 result | u8 signal`, little endian, value length 10.
+   With no signal the whole value is zero. `result` is the amp's own deviation scale, documented as -150..150 in JBL One.
+5. To stop, set `0x3100 = 0`, then `0x3804 = [1, 0]`.
+
+Value meanings: `0x3102` instrument 0 guitar 3+3, 1 guitar 6-in-line, 2 bass 4-string, 3 ukulele. `0x3101` string mode 0 auto, 1..6 a fixed string. In the measurements the string number counts from the high E (1 = E4 at 329.6 Hz ... 6 = E2 at 82.4 Hz), observed with a guitar in standard tuning.
+
+Heartbeat: the amp notifies feature `0x0002` (empty value, `N14 c3 ... 02 00 00 00`) periodically. JBL One answers each one with a command 4 frame carrying feature `0x0002` and no value (`00 DD 04 00 01 00 04 00 02 00 00 00`). Without that answer the amp left the tuner page by itself after a few seconds in our tests. The echo is implemented but was not yet confirmed on hardware when this was written.
+
+The amp is muted while the tuner is open, as on its own tuner page.
 
 ## Values and identity
 
