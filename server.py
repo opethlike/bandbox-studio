@@ -48,7 +48,7 @@ def active_identifier():
 
 
 async def native(mode: str, identifier: str | None, seconds: int, channel: int = CHANNEL) -> tuple:
-    args = [str(ROOT / "bin" / "bandbox-probe"), "--seconds", str(seconds)]
+    args = [str(ROOT / "bin" / "bandbox-probe.app" / "Contents" / "MacOS" / "bandbox-probe"), "--seconds", str(seconds)]
     if identifier:
         args += ["--id", identifier]
     elif mode == "inspect" and channel == 1:
@@ -193,7 +193,7 @@ async def bandbox_apply_drive_change(change_token: str) -> dict:
             plan_path = RUNTIME / f"{operation_id}.plan.json"
             plan_path.write_text(json.dumps(plan, indent=2) + "\n")
             proc = await asyncio.create_subprocess_exec(
-                str(ROOT / "bin" / "bandbox-probe"), "--id", plan["device_uuid"],
+                str(ROOT / "bin" / "bandbox-probe.app" / "Contents" / "MacOS" / "bandbox-probe"), "--id", plan["device_uuid"],
                 "--set-drive-plan", str(plan_path), "--seconds", "45",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             try:

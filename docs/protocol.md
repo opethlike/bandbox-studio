@@ -212,9 +212,11 @@ match how a real MCP/GUI session would actually do it.
 **Every feature this repo implements has now been confirmed live
 through the real `server.py` -> `Controls`/`DriveRoundTrip.swift` ->
 Swift-probe path against a Solo**, not just via `tools/bandbox_ctl.py`:
-preset read/select/duplicate/rename/save, looper (direct only, see
-above), effects, mixer, and Drive. Nothing in this repo's Solo support
-remains purely inferred.
+preset read/select/duplicate/rename/save, looper, effects, mixer, and
+Drive. The looper's start/stop recording round trip was confirmed
+through this same path via `check_mcp.py --live-looper` (`verified:
+true` on both, `recorded_audio_reported: true`, a 500ms length
+readback). Nothing in this repo's Solo support remains purely inferred.
 
 ## Transport
 

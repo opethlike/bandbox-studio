@@ -19,6 +19,11 @@ Live writes (deliberate opt-in, each changes something on the amp):
     already be selected (combine with --live-select-preset or an edit flag
     earlier in the same command, or select it on the amp first) -- this
     does not select it itself, since that would discard pending edits.
+  --live-looper [record_seconds]
+    Starts a freehand looper recording through the full MCP path, waits
+    record_seconds (default 4.0) for the amp to actually capture audio,
+    then stops it and checks recorded_audio_reported. The looper must be
+    empty and stopped beforehand (play/clear it on the amp first if not).
 """
 import asyncio
 import json
@@ -32,13 +37,14 @@ from mcp.client.stdio import stdio_client
 ROOT = Path(__file__).resolve().parent
 
 
-async def live_write(session, output, name, args, verified_key="verified"):
+async def live_write(session, output, name, args, verified_key="verified", output_key=None):
+    output_key = output_key or name
     result = await session.call_tool(name, args)
     assert not result.isError, result
     data = json.loads(next(c.text for c in result.content if c.type == "text"))
-    output["results"][name] = data
+    output["results"][output_key] = data
     if not data.get(verified_key):
-        output.setdefault("failed_tools", []).append(name)
+        output.setdefault("failed_tools", []).append(output_key)
     return data
 
 
@@ -145,6 +151,22 @@ async def main():
                 # silently reselecting over pending edits.
                 await live_write(session, output, "bandbox_save_user_preset",
                                  {"expected_preset_id": preset_id})
+            if "--live-looper" in sys.argv:
+                i = sys.argv.index("--live-looper")
+                record_seconds = (float(sys.argv[i + 1])
+                                  if len(sys.argv) > i + 1 and not sys.argv[i + 1].startswith("--")
+                                  else 4.0)
+                start = await live_write(session, output, "bandbox_control_looper",
+                                         {"action": "start_recording"},
+                                         output_key="bandbox_control_looper_start")
+                if start.get("verified"):
+                    print(f"recording for {record_seconds}s -- play something now", file=sys.stderr)
+                    await asyncio.sleep(record_seconds)
+                    await live_write(session, output, "bandbox_control_looper",
+                                     {"action": "stop_recording"},
+                                     output_key="bandbox_control_looper_stop")
+                else:
+                    output.setdefault("failed_tools", []).append("bandbox_control_looper_stop_skipped")
             print(json.dumps(output, indent=2))
             if output.get("failed_tools"):
                 raise SystemExit(1)

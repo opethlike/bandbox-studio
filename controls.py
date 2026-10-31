@@ -77,7 +77,7 @@ class Controls:
         path = self.state / f"{operation}.plan.json"
         path.write_text(json.dumps(plan, indent=2) + "\n")
         process = await asyncio.create_subprocess_exec(
-            str(self.root / "bin/bandbox-probe"), "--id", plan["device_uuid"],
+            str(self.root / "bin/bandbox-probe.app/Contents/MacOS/bandbox-probe"), "--id", plan["device_uuid"],
             "--control-plan", str(path), "--seconds", "20",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         try:

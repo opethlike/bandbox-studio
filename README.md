@@ -77,14 +77,14 @@ Hardware validation has been performed on **one Trio, one Solo, and one Mac**, n
 | Area | Evidence |
 | --- | --- |
 | BLE service discovery and reads | Device services, preset inventory, current selection, and saved details read successfully |
-| BandBox Solo — every implemented operation confirmed over BLE | Preset select (channel `1`), the full looper set, effects (parameter, bypass, model change), channel-1 (guitar) mixer volume, and preset duplicate/rename/save all confirmed directly against hardware. See [docs/protocol.md#bandbox-solo](docs/protocol.md#bandbox-solo). Master volume gets no reply at all on the Solo. The real `server.py`/`Controls`/`DriveRoundTrip.swift`/Swift-probe path (`BANDBOX_GUITAR_CHANNEL=1`) is itself fully confirmed live too, via `check_mcp.py`'s `--live-*` flags: reading, selecting/duplicating/renaming/saving a preset, setting an effect parameter, setting a channel's mixer volume, and the Drive round-trip. Nothing in this repo's Solo support remains purely inferred. |
+| BandBox Solo — every implemented operation confirmed over BLE | Preset select (channel `1`), the full looper set, effects (parameter, bypass, model change), channel-1 (guitar) mixer volume, and preset duplicate/rename/save all confirmed directly against hardware. See [docs/protocol.md#bandbox-solo](docs/protocol.md#bandbox-solo). Master volume gets no reply at all on the Solo. The real `server.py`/`Controls`/`DriveRoundTrip.swift`/Swift-probe path (`BANDBOX_GUITAR_CHANNEL=1`) is itself fully confirmed live too, via `check_mcp.py`'s `--live-*` flags: reading, selecting/duplicating/renaming/saving a preset, setting an effect parameter, setting a channel's mixer volume, the Drive round-trip, and (via `--live-looper`) a start/stop recording round trip with a verified non-zero recorded length. Nothing in this repo's Solo support remains purely inferred. |
 | Drive | `41 → 40 → 41`, confirmed by device reports and the amp's display |
 | User-preset workflow | New presets created, selected, programmed, saved, and read back; source factory preset preserved |
 | Effects | Model changes, parameter changes, and active/bypass changes exercised while programming those presets; not every model tested |
 | Master mixer | `15 → 14 → 15` raw steps, with matching reports and final readback |
 | Drum tempo | `90 → 89 → 90` BPM, with matching reports and final readback |
 | GUI | Live reads verified; editing, saving, creation, and practice-control flows browser-tested with a simulated device |
-| Other paths | Save As, rename, remaining catalog models, tuner writes, channel mixer writes, and looper recording/bar changes are not individually hardware-verified |
+| Other paths | Save As, rename, remaining catalog models, tuner writes, channel mixer writes, and looper bar changes are not individually hardware-verified |
 
 The test suite covers decoding, request validation, state guards, shared-state invalidation, and GUI HTTP boundaries. Offline tests and a matching device report do not establish audio quality or universal firmware compatibility. USB control is not implemented.
 
