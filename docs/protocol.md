@@ -50,13 +50,12 @@ so a rejected candidate's later disconnect callback can't be mistaken for
 the real target dropping.
 
 One asymmetry worth knowing: this fallback only runs during a full scan
-(no `--id` given). The `--id`-based fast path still requires
-`peripheral.name` to match, so it depends on CoreBluetooth having already
-cached the Solo's name from an earlier connection (which it does, in
-practice, once the anonymous fallback has connected to it once). If that
-cache is ever absent, `server.py`'s existing discovery-recovery path
-(re-running a full, nameless `inspect` scan when a cached identifier
-fails) already falls back to a full scan, which goes through the
+(no `--id` given). An explicitly pinned `--id` connects without requiring
+a cached `peripheral.name` match -- a previously confirmed identifier is
+the strongest identity signal this tool has, stronger than a name. If no
+identifier is pinned or cached yet, `server.py`'s existing
+discovery-recovery path (re-running a full, nameless `inspect` scan when
+there's nothing cached) falls back to a full scan, which goes through the
 anonymous path again -- no special-casing needed there.
 
 **The control service UUID is public** (it's printed in this file and in
@@ -65,13 +64,27 @@ proof it's the user's own amp -- a spoofed peripheral exposing the same
 UUID would be accepted just as readily. For that reason the anonymous
 fallback only runs when the caller opts in: `bandbox-probe --allow-anonymous`
 (CLI), `--allow-anonymous` to `tools/bandbox_ctl.py`, or, for the MCP
-server and GUI, setting `BANDBOX_GUITAR_CHANNEL=1` -- configuring a Solo is
-itself treated as consent to probe anonymous candidates during discovery,
-since that's the only reason to need the fallback. Trio setups
-(`BANDBOX_GUITAR_CHANNEL=3`, the default) never probe anonymous candidates.
-Once a device has been confirmed once (named or anonymous), pin its
-CoreBluetooth UUID with `BANDBOX_DEVICE_UUID` / `--id` rather than relying
-on fresh anonymous probing on every run.
+server and GUI, setting `BANDBOX_ALLOW_ANONYMOUS=1`. This is deliberately
+**separate** from `BANDBOX_GUITAR_CHANNEL`: picking the Solo's channel is
+a model choice, not consent to trust an unnamed nearby device -- an
+earlier version conflated the two (channel 1 alone enabled anonymous
+probing), which a maintainer review of the Solo-support PR flagged as
+letting a nearby spoofed peripheral get adopted and cached without any
+confirmation. With that fixed, a Trio or Solo setup only probes anonymous
+candidates when `BANDBOX_ALLOW_ANONYMOUS=1` is set explicitly.
+
+An anonymous match is also never cached or trusted beyond the single read
+that discovered it: the MCP server uses it for that one `bandbox_inspect`
+/ `bandbox_read_*` call (the result's `identity_confirmed` is `false`),
+but never writes it to `device-id.txt`, and `Controls.exchange` refuses
+every write (`bandbox_set_*`, `bandbox_select_preset`, etc.) whenever
+there's no pinned or cached identity to use, with zero packets sent. To
+actually control the amp, review the reported UUID, then pin it with
+`BANDBOX_DEVICE_UUID` / `--id` -- the same mechanism a named device never
+needed in the first place, now required once for an anonymous one too.
+A **named** match (by `peripheral.name`) is unaffected by any of this and
+still caches and works for writes exactly as before; the stricter
+handling here is specific to the anonymous, no-name case.
 
 The looper (features `0x3140`/`0x3145`, no channel byte at all) was also
 confirmed directly against a Solo via `tools/bandbox_ctl.py`: start, stop

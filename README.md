@@ -96,6 +96,7 @@ Runtime state is stored in `~/Library/Application Support/BandBoxStudio/state`. 
 | --- | --- |
 | `BANDBOX_RUNTIME_DIR` | Override the shared state folder. Use the same value for GUI and MCP. |
 | `BANDBOX_DEVICE_UUID` | Optionally pin a Mac CoreBluetooth peripheral UUID. This is not a Bluetooth MAC address. |
+| `BANDBOX_ALLOW_ANONYMOUS` | Opt in to probing nearby unnamed BLE devices for the control service when none advertises a name (the Solo can do this). Separate from `BANDBOX_GUITAR_CHANNEL` -- picking a model is not consent to trust an unnamed device. An anonymous match is used once but never cached; pin its UUID via `BANDBOX_DEVICE_UUID` to confirm it and enable writes. |
 
 Without a pin, the helper discovers the BandBox by its expected name and checks its control service. Ambiguous multiple-device discovery is refused. A pinned device is not silently replaced by another device if its connection fails.
 

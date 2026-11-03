@@ -68,12 +68,24 @@ class Controls:
 
     async def exchange(self, request, matcher):
         request = {"value_hex": "", **request}
+        device_uuid = self.identifier()
+        if device_uuid is None:
+            # No pinned or cached device identity -- an anonymous discovery
+            # match is never cached (see server.py's _run_probe), so this is
+            # reached whenever that's the only candidate found so far.
+            return self.record_result({
+                "action": request["action"], "verified": False, "status": "stopped_before_write",
+                "setting_writes": 0, "values": [], "reports": [],
+                "errors": [{"error": "No confirmed device identity. Run bandbox_inspect, then pin "
+                                      "BANDBOX_DEVICE_UUID to the reported UUID before writing."}],
+                "native_error": "",
+            })
         if request["setting_write"]:
             self.mark_mutation()
         if request["setting_write"] and self.invalidate_drive is not None:
             self.invalidate_drive()
         operation = uuid.uuid4().hex
-        plan = dict(request, device_uuid=self.identifier(), created_at=time.time())
+        plan = dict(request, device_uuid=device_uuid, created_at=time.time())
         path = self.state / f"{operation}.plan.json"
         path.write_text(json.dumps(plan, indent=2) + "\n")
         process = await asyncio.create_subprocess_exec(

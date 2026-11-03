@@ -12,7 +12,7 @@ from guitar_protocol import inventory_result
 from current_preset import CHANNEL_LABELS
 from current_query import current_result
 from drive_control import PendingChanges, device_lease, validate_request, device_revision, mark_device_changed
-from runtime_config import runtime_directory, pinned_identifier, guitar_channel
+from runtime_config import runtime_directory, pinned_identifier, guitar_channel, allow_anonymous_discovery
 
 ROOT = Path(__file__).resolve().parent
 lock = asyncio.Lock()
@@ -51,11 +51,11 @@ async def native(mode: str, identifier: str | None, seconds: int, channel: int =
     args = [str(ROOT / "bin" / "bandbox-probe.app" / "Contents" / "MacOS" / "bandbox-probe"), "--seconds", str(seconds)]
     if identifier:
         args += ["--id", identifier]
-    elif mode == "inspect" and channel == 1:
-        # The Solo can advertise anonymously; BANDBOX_GUITAR_CHANNEL=1 is the
-        # user's explicit local configuration for one, so it doubles as
-        # consent to probe nearby unnamed devices for the control service
-        # during discovery. See BandBoxProbe.swift's --allow-anonymous.
+    elif mode == "inspect" and allow_anonymous_discovery():
+        # The Solo can advertise anonymously, but picking its channel is a
+        # model choice, not consent to trust an unnamed nearby device --
+        # that needs its own explicit opt-in. See BandBoxProbe.swift's
+        # --allow-anonymous and _run_probe's handling of an anonymous match.
         args.append("--allow-anonymous")
     if mode == "state":
         args.append("--read-state")
@@ -84,9 +84,11 @@ async def run_probe(mode: str) -> dict:
 async def _run_probe(mode: str) -> dict:
     global runtime_id
     recovery = []
+    identity_confirmed = True
     identifier = active_identifier()
     code, events, stderr = (await native(mode, identifier, 12)
                             if identifier else (1, [], "No cached device; discovering."))
+    reported_id = runtime_id
     if not summarize(events)["connected"] and not PINNED_ID:
         # An unconfigured or rotated identifier needs read-only discovery.
         # Explicitly pinned identifiers never fall back to a different amp.
@@ -95,18 +97,32 @@ async def _run_probe(mode: str) -> dict:
         if (summarize(discovery)["connected"] and any(
             e.get("event") == "service" and e.get("uuid") == CONFIG["service_uuid"] for e in discovery
         )):
-            runtime_id = next(e["id"] for e in discovery if e.get("event") == "connected")
-            RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
-            (RUNTIME / "device-id.txt").write_text(runtime_id + "\n")
-            (RUNTIME / "device-channel.txt").write_text(str(CHANNEL) + "\n")
+            discovered_id = next(e["id"] for e in discovery if e.get("event") == "connected")
+            reported_id = discovered_id
+            if any(e.get("event") == "retrieved_target" and e.get("anonymous") for e in discovery):
+                # An anonymous peripheral's public-service-UUID match is not
+                # proof of identity -- it's only ever used for this one read.
+                # Never cache it, on disk or in the `runtime_id` global: a
+                # cached identifier is trusted for writes (see
+                # Controls.exchange) and reused by later calls in this same
+                # process, and a later call must not silently inherit or
+                # replace a previously trusted device with it. Pin
+                # BANDBOX_DEVICE_UUID to the reported UUID to confirm it.
+                identity_confirmed = False
+            else:
+                runtime_id = discovered_id
+                RUNTIME.mkdir(parents=True, exist_ok=True, mode=0o700)
+                (RUNTIME / "device-id.txt").write_text(runtime_id + "\n")
+                (RUNTIME / "device-channel.txt").write_text(str(CHANNEL) + "\n")
             if mode in ("state", "presets", "current"):
-                code, events, stderr = await native(mode, runtime_id, 12)
+                code, events, stderr = await native(mode, discovered_id, 12)
             else:
                 code, events, stderr = 0, discovery, discovery_stderr
         else:
             code, events, stderr = 1, discovery, discovery_stderr
     result = {
-        "target": CONFIG, "active_corebluetooth_uuid": runtime_id, "mode": mode, "exit_code": code,
+        "target": CONFIG, "active_corebluetooth_uuid": reported_id, "mode": mode, "exit_code": code,
+        "identity_confirmed": identity_confirmed,
         "events": events, "recovery_events": recovery, "stderr": stderr, **summarize(events),
         "limitation": "Raw 0x000D maps to battery in JBL One 2.7.9 code; the phone's battery display was not compared. This operation changes no settings.",
     }
@@ -116,6 +132,10 @@ async def _run_probe(mode: str) -> dict:
     elif mode == "current":
         result.update(current_result(events, channel=CHANNEL))
         result["limitation"] = "The app classifies these details as saved preset information. They are not a verified snapshot of unsaved edits and must not be used alone as a rollback baseline. The two app-proven parameterized reads use command 2, but change no settings."
+    if not identity_confirmed:
+        result["limitation"] += (" This device was matched anonymously by its public service UUID alone, "
+                                  "not a confirmed identity; it was not cached, and any write will be "
+                                  "refused until BANDBOX_DEVICE_UUID is pinned to the reported UUID.")
     if code != 0 or (mode == "state" and not result["query_response_verified"]):
         result["error"] = "Probe did not complete successfully; inspect events for the cause."
     if mode == "presets" and not result["preset_list_verified"]:

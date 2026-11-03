@@ -325,6 +325,16 @@ class ControlsTests(unittest.IsolatedAsyncioTestCase):
         spawn.assert_awaited_once()
         process.communicate.assert_awaited_once()
 
+    async def test_unconfirmed_identity_refuses_write_without_spawning_probe(self):
+        control = Controls(self.directory, self.directory, asyncio.Lock(), self.reader, lambda: None)
+        action = presets.select(3, 1)
+        with patch("controls.asyncio.create_subprocess_exec", AsyncMock()) as spawn:
+            result = await control.exchange(action, lambda raw: raw == "0301")
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["setting_writes"], 0)
+        self.assertEqual(result["status"], "stopped_before_write")
+        spawn.assert_not_awaited()
+
     async def test_drive_invalidation_callback_runs_before_setting_dispatch_only(self):
         callback = Mock()
         self.control.invalidate_drive = callback
