@@ -194,6 +194,38 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["active_corebluetooth_uuid"], other_id)
         self.assertEqual((server.RUNTIME / "device-channel.txt").read_text().strip(), "1")
 
+    def test_cached_device_is_ignored_in_the_other_mismatch_direction(self):
+        # Same as above, but a Solo (channel 1) cache must not be reused
+        # once the configured channel changes back to 3 (Trio).
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        (server.RUNTIME / "device-channel.txt").write_text("1")
+        with patch.object(server, "CHANNEL", 3):
+            self.assertIsNone(server.active_identifier())
+
+    def test_legacy_cache_without_channel_metadata_is_reused_for_trio(self):
+        # A cache written before multi-model support predates
+        # device-channel.txt entirely and was always a Trio's -- upgrading
+        # the code while staying on the default channel must not force an
+        # unnecessary rediscovery.
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        with patch.object(server, "CHANNEL", 3):
+            self.assertEqual(server.active_identifier(), IDENTIFIER)
+
+    def test_legacy_cache_without_channel_metadata_is_not_trusted_for_solo(self):
+        # The same legacy cache must not be assumed safe for a newly
+        # configured Solo -- it could easily be a Trio's UUID.
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        with patch.object(server, "CHANNEL", 1):
+            self.assertIsNone(server.active_identifier())
+
+    def test_invalid_channel_metadata_is_handled_like_missing(self):
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        (server.RUNTIME / "device-channel.txt").write_text("not-a-channel")
+        with patch.object(server, "CHANNEL", 3):
+            self.assertEqual(server.active_identifier(), IDENTIFIER)
+        with patch.object(server, "CHANNEL", 1):
+            self.assertIsNone(server.active_identifier())
+
 
 if __name__ == "__main__":
     unittest.main()

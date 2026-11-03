@@ -32,14 +32,16 @@ def active_identifier():
     if PINNED_ID:
         return PINNED_ID
     try:
-        cached_channel = (RUNTIME / "device-channel.txt").read_text().strip()
-        if cached_channel and int(cached_channel) != CHANNEL:
-            # The cached device was discovered under a different
-            # BANDBOX_GUITAR_CHANNEL; it may be a still-reachable amp of the
-            # other model. Force rediscovery instead of reusing its UUID.
-            return None
+        cached_channel = int((RUNTIME / "device-channel.txt").read_text().strip())
     except (OSError, ValueError):
-        pass
+        cached_channel = None
+    # A device cached under a different channel may be a still-reachable
+    # amp of the other model -- force rediscovery instead of reusing its
+    # UUID. Missing/invalid metadata predates multi-model support and was
+    # always a Trio: trust it only while still configured for one; for any
+    # other channel, an unknown cache is handled the same as a mismatch.
+    if cached_channel != CHANNEL and not (cached_channel is None and CHANNEL == 3):
+        return None
     try:
         runtime_id = str(uuid.UUID((RUNTIME / "device-id.txt").read_text().strip())).upper()
     except (OSError, ValueError):
@@ -48,7 +50,10 @@ def active_identifier():
 
 
 async def native(mode: str, identifier: str | None, seconds: int, channel: int = CHANNEL) -> tuple:
-    args = [str(ROOT / "bin" / "bandbox-probe.app" / "Contents" / "MacOS" / "bandbox-probe"), "--seconds", str(seconds)]
+    # --channel is always passed (not just for --read-current) so discovery
+    # itself only matches the configured model's advertised/retrieved name.
+    args = [str(ROOT / "bin" / "bandbox-probe.app" / "Contents" / "MacOS" / "bandbox-probe"),
+            "--seconds", str(seconds), "--channel", str(channel)]
     if identifier:
         args += ["--id", identifier]
     elif mode == "inspect" and allow_anonymous_discovery():
@@ -62,7 +67,7 @@ async def native(mode: str, identifier: str | None, seconds: int, channel: int =
     elif mode == "presets":
         args.append("--read-presets")
     elif mode == "current":
-        args += ["--read-current", "--channel", str(channel)]
+        args.append("--read-current")
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=seconds + 5)

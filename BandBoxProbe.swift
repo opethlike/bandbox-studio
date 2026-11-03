@@ -8,22 +8,25 @@ func arg(_ name: String) -> String? {
     guard let i = CommandLine.arguments.firstIndex(of: name), i + 1 < CommandLine.arguments.count else { return nil }
     return CommandLine.arguments[i + 1]
 }
-// Discovery only. The Solo advertises/reports as "JBL BandBox Solo" and has
-// been confirmed to answer channel-select guitar-preset reads (preset_controls
-// accepts channel 1 or 3) -- see docs/protocol.md#bandbox-solo. Everything
-// else in this repo (effects, mixer, looper, save/duplicate/rename) still
-// hardcodes channel 3 in controls.py/DriveRoundTrip.swift and has not been
-// adapted or tested against a Solo; connecting one will let you read presets
-// but other operations are unverified and may behave incorrectly.
-func isSupportedBandBoxName(_ name: String?) -> Bool {
-    name == "JBL BandBox Trio" || name == "JBL BandBox Solo"
+// Discovery requires the advertised/retrieved name to match the configured
+// model (--channel below: 1 is the Solo, 3 the Trio, the default) -- a Trio
+// must never be silently adopted while channel 1 is configured, or vice
+// versa. The Solo has been confirmed to answer channel-select guitar-preset
+// reads (preset_controls accepts channel 1 or 3) -- see
+// docs/protocol.md#bandbox-solo. Everything else in this repo (effects,
+// mixer, looper, save/duplicate/rename) still hardcodes channel 3 in
+// controls.py/DriveRoundTrip.swift and has not been adapted or tested
+// against a Solo; connecting one will let you read presets but other
+// operations are unverified and may behave incorrectly.
+func isSupportedBandBoxName(_ name: String?, channel: UInt8) -> Bool {
+    name == (channel == 1 ? "JBL BandBox Solo" : "JBL BandBox Trio")
 }
 let seconds = Double(arg("--seconds") ?? "15") ?? -1
 let listenOnly = CommandLine.arguments.contains("--listen")
 let readState = CommandLine.arguments.contains("--read-state")
 let readPresets = CommandLine.arguments.contains("--read-presets")
 let readCurrent = CommandLine.arguments.contains("--read-current")
-let readCurrentChannel = UInt8(arg("--channel") ?? "3") ?? 0
+let configuredChannel = UInt8(arg("--channel") ?? "3") ?? 0
 let driveTestRequested = arg("--drive-test-plan") != nil
 let driveSetRequested = arg("--set-drive-plan") != nil
 let driveControlRequested = driveTestRequested || driveSetRequested
@@ -39,8 +42,8 @@ let allowAnonymous = CommandLine.arguments.contains("--allow-anonymous")
 let maximumSeconds = listenOnly ? 300.0 : 60.0
 guard (1...maximumSeconds).contains(seconds), (!driveControlRequested || seconds >= 45), (!controlRequested || seconds >= 12), [listenOnly, readState, readPresets, readCurrent, driveTestRequested, driveSetRequested, controlRequested].filter({ $0 }).count <= 1, !CommandLine.arguments.contains("--query-version"),
       arg("--id") == nil || UUID(uuidString: arg("--id")!) != nil,
-      !readCurrent || readCurrentChannel == 1 || readCurrentChannel == 3 else {
-    fputs("Usage: bandbox-probe [--id UUID] [--allow-anonymous] [--seconds 1..60 (1..300 for --listen)] [--read-state|--read-presets|--read-current [--channel 1|3]|--listen|--drive-test-plan FILE|--set-drive-plan FILE (45..60 seconds)]\n", stderr)
+      configuredChannel == 1 || configuredChannel == 3 else {
+    fputs("Usage: bandbox-probe [--id UUID] [--allow-anonymous] [--channel 1|3 (default 3; which BandBox model discovery expects)] [--seconds 1..60 (1..300 for --listen)] [--read-state|--read-presets|--read-current|--listen|--drive-test-plan FILE|--set-drive-plan FILE (45..60 seconds)]\n", stderr)
     exit(2)
 }
 guard !queryRequested || arg("--id") != nil else {
@@ -213,7 +216,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             if arg("--id") == nil {
                 let matches = central.retrieveConnectedPeripherals(withServices: [
                     CBUUID(string: "65786365-6C70-6F69-6E74-2E636F6D0000")
-                ]).filter { isSupportedBandBoxName($0.name) }
+                ]).filter { isSupportedBandBoxName($0.name, channel: configuredChannel) }
                 for peripheral in matches {
                     candidates[peripheral.identifier] = peripheral
                     emit("retrieved_connected_target", ["id": peripheral.identifier.uuidString, "name": peripheral.name ?? ""])
@@ -314,7 +317,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
            !anonymousCandidates.contains(where: { $0.peripheral.identifier == peripheral.identifier }) {
             anonymousCandidates.append((peripheral, RSSI.intValue))
         }
-        guard isSupportedBandBoxName(name) else { return }
+        guard isSupportedBandBoxName(name, channel: configuredChannel) else { return }
         emit("advertisement", ["name": name, "id": peripheral.identifier.uuidString, "rssi": RSSI,
                                "services": services, "manufacturer_hex": hex(manufacturer),
                                "connectable": advertisementData[CBAdvertisementDataIsConnectable] ?? NSNull()])
@@ -437,7 +440,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             // JBL One's GuitarPresetSelectQuery(channel), NOT GuitarPresetSelect.
             // Semantic read 3441 returns feature3442; command2 is its app transport.
             // channel is 3 on the Trio, 1 on the Solo (see docs/protocol.md#bandbox-solo).
-            let packet = Data([0x00, 0xDD, 0x02, 0x00, 0x01, 0x00, 0x05, 0x00, 0x41, 0x34, 0x01, 0x00, readCurrentChannel])
+            let packet = Data([0x00, 0xDD, 0x02, 0x00, 0x01, 0x00, 0x05, 0x00, 0x41, 0x34, 0x01, 0x00, configuredChannel])
             emit("query", ["purpose": "get_channel_selection_3441", "hex": hex(packet), "setting_write": false])
             peripheral.writeValue(packet, for: tx, type: .withResponse)
             return
@@ -492,7 +495,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
            characteristic.uuid.uuidString == "65786365-6C70-6F69-6E74-2E636F6D0001",
            data.count == 16, data[0] == 0x00, data[1] == 0xDD,
            (data[2] == 1 || data[2] == 3), data[3] == 0,
-           Array(data[4..<15]) == [1, 0, 8, 0, 0, 0, 0x42, 0x34, 2, 0, readCurrentChannel],
+           Array(data[4..<15]) == [1, 0, 8, 0, 0, 0, 0x42, 0x34, 2, 0, configuredChannel],
            (1...254).contains(Int(data[15])), let tx {
             detailQueried = true
             queriedPresetID = data[15]
@@ -518,7 +521,7 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 }
 
 let classicTargets = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? []).filter {
-    isSupportedBandBoxName($0.name)
+    isSupportedBandBoxName($0.name, channel: configuredChannel)
 }
 for device in classicTargets {
     emit("classic_target", ["name": device.name ?? "", "address": device.addressString ?? "",

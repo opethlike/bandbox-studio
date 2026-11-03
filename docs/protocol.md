@@ -16,18 +16,23 @@ is set.
 
 ### Discovery: the Solo can advertise with no name at all
 
-`BandBoxProbe.swift` recognizes both `"JBL BandBox Trio"` and
-`"JBL BandBox Solo"` by name. But the Solo has also been observed
-advertising with **no name and no manufacturer data** -- its Bluetooth
-button may need a fresh press to make it discoverable at all, and even
-then the name doesn't always come through on the first advertisement.
-A name-only filter never finds it in that state.
+`BandBoxProbe.swift` recognizes `"JBL BandBox Trio"` or `"JBL BandBox
+Solo"` by name, whichever matches the configured `--channel` (1 is the
+Solo, 3 the Trio, passed through on every run, discovery included -- not
+just `--read-current` as before). But the Solo has also been observed
+advertising with
+**no name and no manufacturer data** -- its Bluetooth button may need a
+fresh press to make it discoverable at all, and even then the name
+doesn't always come through on the first advertisement. A name-only
+filter never finds it in that state.
 
 To handle this, discovery now runs in two passes:
 
 1. **Named pass** (unchanged): scan for `~5s` (`min(5.0, seconds/2)`),
-   collect peripherals whose advertised name matches either model. If
-   exactly one is found, connect to it as before.
+   collect peripherals whose advertised name matches the configured
+   model. A differently-named BandBox nearby (the other model) is never
+   adopted, even if it's the only one found. If exactly one match is
+   found, connect to it as before.
 2. **Anonymous fallback** (new): if the named pass finds nothing, probe
    every peripheral seen advertising with no name *and* no manufacturer
    data, strongest RSSI first -- connect, ask only for the one control
@@ -85,6 +90,16 @@ needed in the first place, now required once for an anonymous one too.
 A **named** match (by `peripheral.name`) is unaffected by any of this and
 still caches and works for writes exactly as before; the stricter
 handling here is specific to the anonymous, no-name case.
+
+**`active_identifier()` also distrusts a channel-mismatched cache in
+both directions**, not just Trio-to-Solo: a Solo's cached UUID is equally
+rejected once the configured channel switches back to `3`. A cache
+written before `device-channel.txt` existed (every pre-multi-model
+install) has no channel recorded at all; that's treated as a Trio's,
+matching what every such cache actually was, so a Trio setup upgrading
+this code keeps working without an unnecessary rediscovery -- but it is
+**not** assumed safe for a newly configured Solo, which forces
+rediscovery instead, the same as a confirmed mismatch.
 
 The looper (features `0x3140`/`0x3145`, no channel byte at all) was also
 confirmed directly against a Solo via `tools/bandbox_ctl.py`: start, stop
