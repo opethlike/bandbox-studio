@@ -28,11 +28,20 @@ filter never finds it in that state.
 
 To handle this, discovery now runs in two passes:
 
-1. **Named pass** (unchanged): scan for `~5s` (`min(5.0, seconds/2)`),
-   collect peripherals whose advertised name matches the configured
-   model. A differently-named BandBox nearby (the other model) is never
-   adopted, even if it's the only one found. If exactly one match is
-   found, connect to it as before.
+1. **Named pass**: scan for most of the `--seconds` budget
+   (`max(seconds/2, seconds-10.0)` -- a 10s tail, or half the budget for
+   a short one, is left for the anonymous fallback below), collecting
+   peripherals whose advertised name matches the configured model.
+   The official app is understood to never act on an unnamed
+   advertisement, and to simply keep scanning for as long as its
+   device list is open rather than giving up after a short window --
+   so it essentially never needs to touch an unnamed peripheral; it
+   just waits for a later advertisement that does carry the name.
+   This pass mirrors that by waiting much longer before
+   giving up on a name, rather than cutting off after 5s regardless of
+   `--seconds`. A differently-named BandBox nearby (the other model) is
+   never adopted, even if it's the only one found. If exactly one match
+   is found, connect to it as before.
 2. **Anonymous fallback** (new): if the named pass finds nothing, probe
    every peripheral seen advertising with no name *and* no manufacturer
    data, strongest RSSI first -- connect, ask only for the one control

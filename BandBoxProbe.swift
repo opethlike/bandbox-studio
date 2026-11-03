@@ -251,8 +251,16 @@ final class Probe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             }
             central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
             // Collect candidates before choosing. Never select the first of
-            // multiple nearby amps with the same advertised name.
-            DispatchQueue.main.asyncAfter(deadline: .now() + min(5.0, seconds / 2)) {
+            // multiple nearby amps with the same advertised name. The name
+            // doesn't always arrive on the amp's first advertisement (see
+            // docs/protocol.md); JBL One has no fixed named-only window at
+            // all and just keeps scanning, so most of the time it never
+            // needs to touch an unnamed peripheral. Mirror that by giving
+            // the named pass most of the budget -- reserving at most the
+            // last 10s (or half the budget, for a short --seconds) for the
+            // anonymous fallback -- instead of cutting it off at 5s and
+            // probing anonymous candidates far more readily than necessary.
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(seconds / 2, seconds - 10.0)) {
                 guard !self.done, self.target == nil else { return }
                 central.stopScan()
                 guard self.candidates.count <= 1 else {
