@@ -17,3 +17,21 @@ def pinned_identifier() -> str | None:
         return str(uuid.UUID(value)).upper()
     except ValueError as exc:
         raise ValueError("BANDBOX_DEVICE_UUID must be a CoreBluetooth UUID, not a Bluetooth MAC address.") from exc
+
+
+def guitar_channel() -> int:
+    """The connected amp's guitar-path channel: 3 (Trio, default) or 1 (Solo)."""
+    value = os.environ.get("BANDBOX_GUITAR_CHANNEL", "").strip()
+    if not value:
+        return 3
+    if value not in ("1", "3"):
+        raise ValueError("BANDBOX_GUITAR_CHANNEL must be 1 (Solo) or 3 (Trio).")
+    return int(value)
+
+
+def allow_anonymous_discovery() -> bool:
+    """Explicit opt-in to probe nearby unnamed BLE devices for the control
+    service during discovery. Separate from BANDBOX_GUITAR_CHANNEL: picking
+    the Solo's channel is a model choice, not consent to trust an unnamed
+    device found nearby."""
+    return os.environ.get("BANDBOX_ALLOW_ANONYMOUS", "").strip().lower() in ("1", "true", "yes")

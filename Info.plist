@@ -3,5 +3,9 @@
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>local.bandbox-studio.probe</string>
 <key>CFBundleName</key><string>BandBox Studio Bluetooth Helper</string>
+<key>CFBundleExecutable</key><string>bandbox-probe</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>NSBluetoothAlwaysUsageDescription</key><string>Read and control your JBL BandBox Trio presets, amp effects, mixer and onboard tools when requested.</string>
 </dict></plist>

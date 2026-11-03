@@ -111,10 +111,47 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_first_run_discovers_before_query_and_persists_verified_device(self):
         native = AsyncMock(side_effect=[(0, DISCOVERY, ""), (0, [{"event": "connected", "id": IDENTIFIER}], "")])
         with patch.object(server, "native", native):
-            await server.run_probe("current")
+            result = await server.run_probe("current")
         self.assertEqual(native.await_args_list[0].args, ("inspect", None, 30))
         self.assertEqual(native.await_args_list[1].args, ("current", IDENTIFIER, 12))
         self.assertEqual((server.RUNTIME / "device-id.txt").read_text().strip(), IDENTIFIER)
+        self.assertTrue(result["identity_confirmed"])
+
+    async def test_anonymous_match_is_used_once_but_never_cached_or_trusted(self):
+        # A nearby device exposing only the public service UUID, with no
+        # name, is not proof of identity: it must still answer this one
+        # read, but never be written to the cache a later run or any write
+        # would trust (see Controls.exchange's own guard for the latter).
+        anonymous_discovery = DISCOVERY + [
+            {"event": "retrieved_target", "id": IDENTIFIER, "name": "", "anonymous": True},
+        ]
+        native = AsyncMock(side_effect=[(0, anonymous_discovery, ""), (0, [{"event": "connected", "id": IDENTIFIER}], "")])
+        with patch.object(server, "native", native):
+            result = await server.run_probe("current")
+        self.assertEqual(result["active_corebluetooth_uuid"], IDENTIFIER)
+        self.assertFalse(result["identity_confirmed"])
+        self.assertFalse((server.RUNTIME / "device-id.txt").exists())
+        self.assertFalse((server.RUNTIME / "device-channel.txt").exists())
+        # Nothing was cached, so a later call has no trusted identity to
+        # silently reuse or replace -- it starts from scratch, same as a
+        # fresh checkout.
+        self.assertIsNone(server.active_identifier())
+
+    async def test_anonymous_opt_in_is_separate_from_the_configured_channel(self):
+        # Configuring a Solo (channel 1) is a model choice, not consent to
+        # probe unnamed nearby devices; that needs BANDBOX_ALLOW_ANONYMOUS.
+        process = AsyncMock(returncode=0)
+        process.communicate.return_value = (b"", b"")
+        with patch("server.asyncio.create_subprocess_exec", AsyncMock(return_value=process)) as spawn, \
+             patch.object(server, "CHANNEL", 1), patch.dict(os.environ, {}, clear=True):
+            await server.native("inspect", None, 30)
+        self.assertNotIn("--allow-anonymous", spawn.await_args.args)
+        # The explicit opt-in works regardless of channel, including Trio's.
+        with patch("server.asyncio.create_subprocess_exec", AsyncMock(return_value=process)) as spawn, \
+             patch.object(server, "CHANNEL", 3), \
+             patch.dict(os.environ, {"BANDBOX_ALLOW_ANONYMOUS": "1"}, clear=True):
+            await server.native("inspect", None, 30)
+        self.assertIn("--allow-anonymous", spawn.await_args.args)
 
     async def test_wrong_service_does_not_persist_device_or_query(self):
         native = AsyncMock(return_value=(0, DISCOVERY[:1], ""))
@@ -138,6 +175,56 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
             result = await server.run_probe("inspect")
         native.assert_awaited_once_with("inspect", IDENTIFIER, 12)
         self.assertEqual(result["active_corebluetooth_uuid"], IDENTIFIER)
+
+    async def test_cached_device_is_ignored_when_channel_changed(self):
+        # A device cached while BANDBOX_GUITAR_CHANNEL=3 (e.g. a reachable
+        # Trio) must not be reused once the configured channel changes to 1;
+        # otherwise channel-1 reads/writes would silently target that amp.
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        (server.RUNTIME / "device-channel.txt").write_text("3")
+        other_id = "99999999-8888-7777-6666-555555555555"
+        other_discovery = [
+            {"event": "connected", "id": other_id},
+            {"event": "service", "uuid": server.CONFIG["service_uuid"]},
+        ]
+        native = AsyncMock(return_value=(0, other_discovery, ""))
+        with patch.object(server, "CHANNEL", 1), patch.object(server, "native", native):
+            result = await server.run_probe("inspect")
+        native.assert_awaited_once_with("inspect", None, 30)
+        self.assertEqual(result["active_corebluetooth_uuid"], other_id)
+        self.assertEqual((server.RUNTIME / "device-channel.txt").read_text().strip(), "1")
+
+    def test_cached_device_is_ignored_in_the_other_mismatch_direction(self):
+        # Same as above, but a Solo (channel 1) cache must not be reused
+        # once the configured channel changes back to 3 (Trio).
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        (server.RUNTIME / "device-channel.txt").write_text("1")
+        with patch.object(server, "CHANNEL", 3):
+            self.assertIsNone(server.active_identifier())
+
+    def test_legacy_cache_without_channel_metadata_is_reused_for_trio(self):
+        # A cache written before multi-model support predates
+        # device-channel.txt entirely and was always a Trio's -- upgrading
+        # the code while staying on the default channel must not force an
+        # unnecessary rediscovery.
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        with patch.object(server, "CHANNEL", 3):
+            self.assertEqual(server.active_identifier(), IDENTIFIER)
+
+    def test_legacy_cache_without_channel_metadata_is_not_trusted_for_solo(self):
+        # The same legacy cache must not be assumed safe for a newly
+        # configured Solo -- it could easily be a Trio's UUID.
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        with patch.object(server, "CHANNEL", 1):
+            self.assertIsNone(server.active_identifier())
+
+    def test_invalid_channel_metadata_is_handled_like_missing(self):
+        (server.RUNTIME / "device-id.txt").write_text(IDENTIFIER)
+        (server.RUNTIME / "device-channel.txt").write_text("not-a-channel")
+        with patch.object(server, "CHANNEL", 3):
+            self.assertEqual(server.active_identifier(), IDENTIFIER)
+        with patch.object(server, "CHANNEL", 1):
+            self.assertIsNone(server.active_identifier())
 
 
 if __name__ == "__main__":

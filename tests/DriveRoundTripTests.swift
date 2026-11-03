@@ -26,12 +26,12 @@ private func reported(_ drive: Float, config: UInt8 = 1, bypass: UInt8 = 0, chan
 }
 private let successACK = frame(2, [0, 0])
 private func plan(_ drive: Int = 41, config: UInt8 = 1, confirmed: Bool = true) -> DriveRoundTrip.Plan {
-    .init(presetID: 2, slotID: 7, algorithmID: 6, configID: config, bypass: 0,
+    .init(channel: 3, presetID: 2, slotID: 7, algorithmID: 6, configID: config, bypass: 0,
           originalFloatBytes: Data(float(Float(drive))), displayedDrive: drive,
           liveMetadataConfirmed: confirmed)
 }
 private func recoveryPlan(_ current: Int = 40, confirmed: Bool = true) -> DriveRoundTrip.Plan {
-    .init(presetID: 2, slotID: 7, algorithmID: 6, configID: 1, bypass: 0,
+    .init(channel: 3, presetID: 2, slotID: 7, algorithmID: 6, configID: 1, bypass: 0,
           originalFloatBytes: Data(float(41)), displayedDrive: current, liveMetadataConfirmed: confirmed)
 }
 private final class Harness {
@@ -90,7 +90,7 @@ private final class Harness {
                 do { _ = try DriveRoundTrip(plan: p); fatalError("Accepted invalid plan") }
                 catch DriveRoundTrip.Failure.invalidPlan { }
             }
-            let p = DriveRoundTrip.Plan(presetID: 2, slotID: 7, algorithmID: 6, configID: 1, bypass: 0,
+            let p = DriveRoundTrip.Plan(channel: 3, presetID: 2, slotID: 7, algorithmID: 6, configID: 1, bypass: 0,
                 originalFloatBytes: Data(float(.nan)), displayedDrive: 41, liveMetadataConfirmed: true)
             do { _ = try DriveRoundTrip(plan: p); fatalError("Accepted NaN") }
             catch DriveRoundTrip.Failure.invalidPlan { }
@@ -307,7 +307,7 @@ private final class Harness {
             } catch DriveRoundTrip.Failure.invalidPlan { }
         }
         try test("requested baseline must exactly match displayed live value") {
-            let p = DriveRoundTrip.Plan(presetID: 2, slotID: 7, algorithmID: 6, configID: 1, bypass: 0,
+            let p = DriveRoundTrip.Plan(channel: 3, presetID: 2, slotID: 7, algorithmID: 6, configID: 1, bypass: 0,
                 originalFloatBytes: Data(float(42)), displayedDrive: 41, liveMetadataConfirmed: true)
             do { _ = try DriveRoundTrip(plan: p, requestedDrive: 43); fatalError("Mismatched baseline accepted") }
             catch DriveRoundTrip.Failure.invalidPlan { }

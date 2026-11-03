@@ -325,6 +325,16 @@ class ControlsTests(unittest.IsolatedAsyncioTestCase):
         spawn.assert_awaited_once()
         process.communicate.assert_awaited_once()
 
+    async def test_unconfirmed_identity_refuses_write_without_spawning_probe(self):
+        control = Controls(self.directory, self.directory, asyncio.Lock(), self.reader, lambda: None)
+        action = presets.select(3, 1)
+        with patch("controls.asyncio.create_subprocess_exec", AsyncMock()) as spawn:
+            result = await control.exchange(action, lambda raw: raw == "0301")
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["setting_writes"], 0)
+        self.assertEqual(result["status"], "stopped_before_write")
+        spawn.assert_not_awaited()
+
     async def test_drive_invalidation_callback_runs_before_setting_dispatch_only(self):
         callback = Mock()
         self.control.invalidate_drive = callback
@@ -516,6 +526,29 @@ class ControlsTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(ValueError):
                         await self.control.set_mixer_volume("master", 15)
                 self.control.exchange.assert_not_awaited()
+
+    async def test_rejects_unsupported_channel(self):
+        for bad in (0, 2, 4, "3"):
+            with self.subTest(channel=bad), self.assertRaises(ValueError):
+                Controls(self.directory, self.directory, asyncio.Lock(), self.reader,
+                         lambda: IDENTIFIER, channel=bad)
+
+    async def test_channel_1_is_threaded_into_preset_select_and_effect_writes(self):
+        solo_current = {"current_preset_read_verified": True,
+                        "selection": {"channel": 1, "preset_id": 1}, "preset_info": info(1, 41)}
+        reader = AsyncMock(return_value=solo_current)
+        solo = Controls(self.directory, self.directory, asyncio.Lock(), reader,
+                        lambda: IDENTIFIER, channel=1)
+        solo.inventory = AsyncMock(return_value=[{"preset_id": 1, "name": "Clean", "genre": 0}])
+        solo.exchange = AsyncMock(return_value=verified("0101", 0x3442))
+        await solo.select_preset(1)
+        action = solo.exchange.call_args[0][0]
+        self.assertEqual(bytes.fromhex(action["value_hex"]), bytes([1, 1]))
+
+        solo.exchange = AsyncMock(return_value=verified(slot_report()))
+        await solo.set_effect_parameter(1, 3, 0, 50, confirm_saved_settings=True)
+        action = solo.exchange.call_args[0][0]
+        self.assertEqual(bytes.fromhex(action["value_hex"])[0], 1)
 
 
 if __name__ == "__main__":

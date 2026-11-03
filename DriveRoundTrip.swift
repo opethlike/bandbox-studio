@@ -9,6 +9,7 @@ import Foundation
 /// confirmation of the displayed Drive, model and bypass before construction.
 final class DriveRoundTrip {
     struct Plan {
+        let channel: UInt8
         let presetID: UInt8
         let slotID: UInt8
         let algorithmID: UInt8
@@ -66,7 +67,8 @@ final class DriveRoundTrip {
     /// of saved Drive. Target is bounded to +/-5; caller handles no-op without I/O.
     init(plan: Plan, confirmedRecoveryDrive: Int? = nil, requestedDrive: Int? = nil,
          timeout: TimeInterval = 6) throws {
-        guard plan.liveMetadataConfirmed, plan.presetID != 0xFF, plan.slotID != 0xFF,
+        guard plan.liveMetadataConfirmed, plan.channel == 1 || plan.channel == 3,
+              plan.presetID != 0xFF, plan.slotID != 0xFF,
               plan.algorithmID == 6, plan.configID <= 8, plan.bypass <= 1,
               (0...100).contains(plan.displayedDrive), plan.originalFloatBytes.count == 4,
               timeout.isFinite, (1...30).contains(timeout),
@@ -175,11 +177,11 @@ final class DriveRoundTrip {
                             settingWrite: phase == .decrement || phase == .restore || phase == .requestedSet))
     }
     private func querySelection(phase: Phase, now: TimeInterval) {
-        queue(Self.packet(0x3441, [3]), phase: phase,
-              purpose: "Read CH3 selection", now: now)
+        queue(Self.packet(0x3441, [plan.channel]), phase: phase,
+              purpose: "Read selection", now: now)
     }
     private func drivePacket(bits: UInt32) -> Data {
-        Self.packet(0x3445, [3, plan.presetID, 4, plan.slotID, plan.algorithmID,
+        Self.packet(0x3445, [plan.channel, plan.presetID, 4, plan.slotID, plan.algorithmID,
                             plan.configID, plan.bypass, 1, 0] + Self.bytes(bits))
     }
     private func advance(now: TimeInterval) {
@@ -230,7 +232,7 @@ final class DriveRoundTrip {
         case .ack:
             if fresh { ack = true }
         case let .selection(channel, preset):
-            guard channel == 3 else { return }
+            guard channel == plan.channel else { return }
             guard preset == plan.presetID else { finish("CH3 selection changed"); return }
             if fresh, phase == .selection || phase == .restoreSelection { matched = true }
         case let .detail(preset, slots):
@@ -243,7 +245,7 @@ final class DriveRoundTrip {
             }
             matched = true
         case let .slot(channel, preset, change, slot):
-            guard channel == 3 else { return }
+            guard channel == plan.channel else { return }
             guard preset == plan.presetID else { finish("CH3 slot report has another preset"); return }
             guard slot.id == plan.slotID else { return }
             guard metadataMatches(slot, change: change) else { finish("Amp metadata changed or is incomplete"); return }

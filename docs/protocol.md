@@ -2,6 +2,263 @@
 
 These notes describe what this implementation understands about the JBL BandBox Trio. They are an interoperability reference, not an official specification. Hardware observations come from one Trio; other models and firmware may differ. See [validation status](../README.md#validation-status) and [sources](../THIRD_PARTY_NOTICES.md).
 
+## BandBox Solo
+
+A **JBL BandBox Solo** was independently found to answer on the same GATT
+service (`65786365-…-0000`), and preset selection (feature `0x3442`) was
+confirmed on real hardware using guitar channel `1` instead of the Trio's
+channel `3` (the Solo has a single instrument input, no mic/vocal channel).
+`preset_controls.py`'s `_channel` already accepts `1` or `3`, and
+`Controls`, `server.py`, and `DriveRoundTrip.swift` now take this channel
+as configuration (`BANDBOX_GUITAR_CHANNEL`, default `3`) instead of
+hardcoding it, so existing Trio setups are unaffected unless that variable
+is set.
+
+### Discovery: the Solo can advertise with no name at all
+
+`BandBoxProbe.swift` recognizes `"JBL BandBox Trio"` or `"JBL BandBox
+Solo"` by name, whichever matches the configured `--channel` (1 is the
+Solo, 3 the Trio, passed through on every run, discovery included -- not
+just `--read-current` as before). But the Solo has also been observed
+advertising with
+**no name and no manufacturer data** -- its Bluetooth button may need a
+fresh press to make it discoverable at all, and even then the name
+doesn't always come through on the first advertisement. A name-only
+filter never finds it in that state.
+
+To handle this, discovery now runs in two passes:
+
+1. **Named pass**: scan for most of the `--seconds` budget
+   (`max(seconds/2, seconds-10.0)` -- a 10s tail, or half the budget for
+   a short one, is left for the anonymous fallback below), collecting
+   peripherals whose advertised name matches the configured model.
+   The official app is understood to never act on an unnamed
+   advertisement, and to simply keep scanning for as long as its
+   device list is open rather than giving up after a short window --
+   so it essentially never needs to touch an unnamed peripheral; it
+   just waits for a later advertisement that does carry the name.
+   This pass mirrors that by waiting much longer before
+   giving up on a name, rather than cutting off after 5s regardless of
+   `--seconds`. A differently-named BandBox nearby (the other model) is
+   never adopted, even if it's the only one found. If exactly one match
+   is found, connect to it as before.
+2. **Anonymous fallback** (new): if the named pass finds nothing, probe
+   every peripheral seen advertising with no name *and* no manufacturer
+   data, strongest RSSI first -- connect, ask only for the one control
+   service (`65786365-…-0000`, nothing broader), and either keep that
+   connection if the service is present or disconnect and try the next
+   candidate. This mirrors `tools/bandbox_ctl.py`'s `find_amp_client()`,
+   which needed the same fallback for the same reason.
+
+This means an anonymous-fallback run **does briefly connect to other
+nearby BLE peripherals** that happen to also advertise without a name
+(for example some headphones or fitness trackers) before finding or
+ruling each one out -- it only ever requests that single service UUID
+from them, never enumerates their other services or characteristics, and
+disconnects immediately on a non-match. The whole probe is still bounded
+by its existing `--seconds` deadline regardless of how many candidates it
+tries. New state backing this
+(`anonymousCandidates`, `probingAnonymous`, `ignoredDisconnects`) is kept
+separate from the single-target fields the rest of the file already used,
+so a rejected candidate's later disconnect callback can't be mistaken for
+the real target dropping.
+
+One asymmetry worth knowing: this fallback only runs during a full scan
+(no `--id` given). An explicitly pinned `--id` connects without requiring
+a cached `peripheral.name` match -- a previously confirmed identifier is
+the strongest identity signal this tool has, stronger than a name. If no
+identifier is pinned or cached yet, `server.py`'s existing
+discovery-recovery path (re-running a full, nameless `inspect` scan when
+there's nothing cached) falls back to a full scan, which goes through the
+anonymous path again -- no special-casing needed there.
+
+**The control service UUID is public** (it's printed in this file and in
+`tools/bandbox_ctl.py`'s header), so a nearby device advertising it is not
+proof it's the user's own amp -- a spoofed peripheral exposing the same
+UUID would be accepted just as readily. For that reason the anonymous
+fallback only runs when the caller opts in: `bandbox-probe --allow-anonymous`
+(CLI), `--allow-anonymous` to `tools/bandbox_ctl.py`, or, for the MCP
+server and GUI, setting `BANDBOX_ALLOW_ANONYMOUS=1`. This is deliberately
+**separate** from `BANDBOX_GUITAR_CHANNEL`: picking the Solo's channel is
+a model choice, not consent to trust an unnamed nearby device -- an
+earlier version conflated the two (channel 1 alone enabled anonymous
+probing), which a maintainer review of the Solo-support PR flagged as
+letting a nearby spoofed peripheral get adopted and cached without any
+confirmation. With that fixed, a Trio or Solo setup only probes anonymous
+candidates when `BANDBOX_ALLOW_ANONYMOUS=1` is set explicitly.
+
+An anonymous match is also never cached or trusted beyond the single read
+that discovered it: the MCP server uses it for that one `bandbox_inspect`
+/ `bandbox_read_*` call (the result's `identity_confirmed` is `false`),
+but never writes it to `device-id.txt`, and `Controls.exchange` refuses
+every write (`bandbox_set_*`, `bandbox_select_preset`, etc.) whenever
+there's no pinned or cached identity to use, with zero packets sent. To
+actually control the amp, review the reported UUID, then pin it with
+`BANDBOX_DEVICE_UUID` / `--id` -- the same mechanism a named device never
+needed in the first place, now required once for an anonymous one too.
+A **named** match (by `peripheral.name`) is unaffected by any of this and
+still caches and works for writes exactly as before; the stricter
+handling here is specific to the anonymous, no-name case.
+
+**`active_identifier()` also distrusts a channel-mismatched cache in
+both directions**, not just Trio-to-Solo: a Solo's cached UUID is equally
+rejected once the configured channel switches back to `3`. A cache
+written before `device-channel.txt` existed (every pre-multi-model
+install) has no channel recorded at all; that's treated as a Trio's,
+matching what every such cache actually was, so a Trio setup upgrading
+this code keeps working without an unnecessary rediscovery -- but it is
+**not** assumed safe for a newly configured Solo, which forces
+rediscovery instead, the same as a confirmed mismatch.
+
+The looper (features `0x3140`/`0x3145`, no channel byte at all) was also
+confirmed directly against a Solo via `tools/bandbox_ctl.py`: start, stop
+(ends recording and starts playback immediately, same as the Trio), pause,
+play/resume, undo (removes the last overdub and resumes the base loop),
+and delete/clear all behave as expected.
+
+Effects (feature `0x3445`) were also confirmed directly against a Solo via
+`tools/bandbox_ctl.py`, using `effect_controls.py`'s builders with
+`channel=1`: parameter changes, bypass on/off, and model changes all
+behave as expected. One finding worth noting: **changing a slot's model
+implicitly activates it**, even if it was bypassed and even though the
+request's bypass byte is `0xFF` (omitted) -- there is no need for a
+separate bypass-off write after a model change to hear the new model.
+Also reconfirmed on the Solo: a saved-detail read (`0x3443`/`0x3444`)
+reflects the *saved* preset, not live edits made via `0x3445` -- matching
+"Saved values and live edits" above, now verified on this model too.
+
+The mixer (feature `0x3405`/`0x3406`) was confirmed directly against a
+Solo too, via `mixer_controls.py`'s builders: reading all four
+`channel_input` slots (`0x3400`/`0x3401`) shows only channel `1` plugged,
+input type `guitar` (2, 3, 4 report unplugged); reading and writing that
+channel's volume works exactly as on the Trio. **`master_volume` (scope
+`[0,0]`) gets no reply at all on the Solo** — confirmed with a 10s listen
+window (`tools/bandbox_ctl.py ... --wait 10`), ruling out a slow reply;
+the amp just never answers that specific query, unlike channel volume on
+the same feature pair. Whether this means the Solo has no separate
+"master" mix stage, or JBL One simply never asks it that question, is not
+yet known -- but per the Solo's manual, it only exposes three volumes:
+guitar, mic (sharing the same instrument jack as guitar -- plugging in a
+mic disables the guitar input -- or the internal mic when using
+headphones), and Bluetooth music. Guitar and mic are the same `channel 1`
+this repo already reads/writes, just with a different `input_type`
+(`mixer_controls.py`'s `_CHANNEL_INPUTS[1] = {mic, guitar}`); Bluetooth
+music is presumably a separate volume outside this `0x3400`-`0x3406`
+feature family entirely. If so, the Solo may simply have no "master" sum
+of simultaneous channels to report, unlike the Trio's four inputs -- this
+still isn't confirmed over BLE, just a plausible explanation.
+
+Preset `duplicate`, `rename`, and `save_user_preset` (feature `0x3446`)
+were also confirmed directly against a Solo via `tools/bandbox_ctl.py`,
+using `preset_controls.py`'s builders with `channel=1`: duplicating
+preset 1 created a new user preset (ID `51`, the first user slot, exactly
+as on the Trio), confirmed present in a follow-up `0x3440` inventory read;
+renaming it worked; and `save_user_preset` persisted a live parameter
+edit, confirmed by reading the preset detail back afterward and seeing
+the saved value rather than the prior one. `save_as` wasn't separately
+exercised but shares the same `0x3446` builder and wire layout as
+`duplicate`, just a different operation code.
+
+**Every BandBox Solo operation this repo implements has now been
+confirmed over BLE**, using channel `1` throughout.
+
+`Controls` (the GUI/MCP's actual controller) no longer hardcodes channel
+`3`: it takes a `channel` constructor parameter, used everywhere it talks
+to `preset_controls.py`/`effect_controls.py`. The server reads this from
+a new `BANDBOX_GUITAR_CHANNEL` environment variable (default `3`, same
+pattern as `BANDBOX_DEVICE_UUID`) -- set it to `1` to drive a Solo
+instead of a Trio. The Drive round-trip feature (`DriveRoundTrip.swift`,
+driven by `drive_control.py`) is adapted the same way: its `Plan` now
+carries the selection's actual channel instead of assuming `3`, both in
+the packet it writes and in the notification guards that watch for a
+reply.
+
+**This path (the real `server.py` -> `Controls` -> compiled Swift probe
+chain, not `tools/bandbox_ctl.py`) was itself confirmed against a Solo**,
+via `check_mcp.py --live-current` with `BANDBOX_GUITAR_CHANNEL=1`:
+`bandbox_read_current_preset` returned a fully verified read (channel 1,
+preset 51, all 8 slots decoded). Two bugs surfaced only by this, since
+nothing in the unit tests could catch either:
+
+- `current_query.py`'s `SELECTION_QUERY_PREFIX` was missing a byte (the
+  value-length field's high byte), so every `selection_query()` result
+  was two hex characters short -- the real device's correctly-built
+  query/reply never matched it. Unit tests passed anyway because
+  `current_result()`'s self-check compared against this same, equally
+  wrong constant.
+- `BandBoxProbe.swift`'s `--read-current` mode had a second, separate
+  hardcoded channel `3`: the exact-byte match that recognizes a selection
+  reply (to then send the follow-up preset-detail query) ended in a
+  literal `3` instead of `readCurrentChannel`, missed in the first pass.
+  With channel 1 this match never fired, so the detail query was never
+  sent and the read never completed.
+
+Also fixed in the process: discovery's anonymous-advertising fallback
+(see above) didn't exist yet at this point in testing, so this run only
+succeeded once that was added.
+
+**A write through this path was also confirmed live**: `check_mcp.py
+--live-select-preset 1` (a new, deliberate opt-in flag, since the rest of
+the script only drives read-only tools) called `bandbox_select_preset`
+on the Solo via `BANDBOX_GUITAR_CHANNEL=1` -- `verified: true`,
+`status: changed_device_reported`, and the post-write readback matched
+preset 1's actual saved values. No further bugs surfaced; the two fixed
+above were sufficient.
+
+**Effects and mixer through this same path were confirmed live too**,
+via two more deliberate opt-in flags: `check_mcp.py
+--live-set-effect-parameter 1 3 0 55` set the AMP's Drive to 55 on the
+Solo (`verified: true`); `--live-set-mixer-channel-volume 1 8` set
+channel 1's (guitar) mixer level to 8 (`verified: true`, decoded state
+confirms `input_type: guitar, value: 8`). The mixer call failed twice
+first with `read_channel_input` reporting channel 1 as unplugged
+(`00DD030001000900000001340300010000` -- plugged=false, input_type=
+unknown) -- not a bug, the guitar cable actually was unplugged at that
+moment; `set_mixer_volume` correctly refused to proceed rather than
+query an invalid channel/input-type pairing. Reconnecting it fixed it.
+
+**The Drive round-trip feature was confirmed live too**, via
+`check_mcp.py --live-drive-change` (chains `bandbox_prepare_drive_change`
++ `bandbox_apply_drive_change`): nudging Drive 55 -> 58 on the Solo
+returned `change_verified: true`, `live_drive: 58`. This caught a
+**third** hardcoded channel `3`, missed in both earlier passes:
+`DriveRoundTrip.swift`'s `querySelection()` built its baseline-check
+query (`0x3441`) with a literal `[3]` instead of `[plan.channel]`. Live
+evidence: the sent query was `...4134010003` (channel 3) and the Solo
+dutifully replied with channel 3 back -- the round trip's own selection
+check then compared `plan.presetID` against the wrong channel's state
+and the whole sequence stalled at "Timed out; no unsafe retry or
+unverified restoration attempted" before ever reaching the actual write.
+Fixed the same way as the other two: use `plan.channel`.
+
+**Preset duplicate, rename, and save_user_preset through this same path
+were confirmed live too**, via three more `check_mcp.py` flags:
+`--live-create-preset 1` duplicated preset 1 into a new user preset
+(`inventory_verified: true`, `details_verified: true`);
+`--live-rename-preset` renamed it (`inventory_verified: true`);
+`--live-save-user-preset` persisted a live edit into it
+(`saved_content_verified: true`). `preset_operation()` requires the
+target already selected (same precondition the Python docstrings already
+state), and `save_user_preset`'s content verification needs a
+`Controls.preview` established in the *same* process -- each
+`check_mcp.py` invocation is its own process, so a `--live-select-preset`
+run earlier doesn't carry over by itself. `--live-save-user-preset` does
+**not** select the preset itself (that would reload it from the device
+and discard pending edits); instead it requires `--live-select-preset`
+or `--live-set-effect-parameter` for the *same* preset_id earlier in the
+same command, and refuses -- before sending anything -- if that
+same-process preview isn't there, rather than sending the save and only
+reporting the failure afterward.
+
+**Every feature this repo implements has now been confirmed live
+through the real `server.py` -> `Controls`/`DriveRoundTrip.swift` ->
+Swift-probe path against a Solo**, not just via `tools/bandbox_ctl.py`:
+preset read/select/duplicate/rename/save, looper, effects, mixer, and
+Drive. The looper's start/stop recording round trip was confirmed
+through this same path via `check_mcp.py --live-looper` (`verified:
+true` on both, `recorded_audio_reported: true`, a 500ms length
+readback). Nothing in this repo's Solo support remains purely inferred.
+
 ## Transport
 
 The native Swift helper uses macOS CoreBluetooth to discover and connect to the control service:
@@ -39,10 +296,30 @@ Command `1` carries GET responses, command `2` carries requests that include bot
 | `0x3446` | User-preset operations |
 | `0x3400` / `0x3401` | Channel input query / response |
 | `0x3405` / `0x3406` | Mixer level query / response and change |
-| `0x300x`, `0x304x`, `0x310x`, `0x314x` | Drum, metronome, tuner, and looper families; only named controls are exposed |
+| `0x300x`, `0x304x`, `0x310x`, `0x314x` | Drum, metronome, tuner, and looper families; only named controls are exposed. See "Tuner session" for the live tuner |
+| `0x3803` / `0x3804` | Page-in-use query / status (page 1 tuner, 2 looper, 3 drum, 4 metronome; state 0 none, 1 device, 2 app) |
+| `0x0002` | Heartbeat notification from the amp; the host echoes it with command 4 |
 | `0x000D` | Raw status mapped to battery in JBL One; not independently compared to a battery display |
 
 `onboard_controls.py` defines the actual supported subsets, ranges, and reply decoders. `effect_catalog.json` defines 44 models and their UI parameter ranges. `ControlRequest.swift` provides a separate native request allowlist.
+
+## Tuner session
+
+Found by examining JBL One 2.1.16 (`TunerViewModel`, `V5GattSession`) and tested on a Trio from an ESP32-S3 BLE central (the `chocolate-plus` bridge). Writing `0x3100 = 1` alone is acknowledged but does nothing: the amp reads back 0 and sends no measurements. The app does this instead:
+
+1. Set `0x3804 = [1, 2]` (tuner page, in use by the app). The amp then reports page 1 as state 2.
+2. Read `0x3102` (instrument), `0x3101` (string mode), `0x3104` (tuning), `0x3103` (reference pitch). The amp answers all four in one notification.
+3. Set `0x3100 = 1`. Reading `0x3100` now returns 1.
+4. The amp streams `0x3106` notifications about ten times a second, in command 3 frames:
+   `f32 frequency (Hz) | u8 string | f32 result | u8 signal`, little endian, value length 10.
+   With no signal the whole value is zero. `result` is the amp's own deviation scale, documented as -150..150 in JBL One.
+5. To stop, set `0x3100 = 0`, then `0x3804 = [1, 0]`.
+
+Value meanings: `0x3102` instrument 0 guitar 3+3, 1 guitar 6-in-line, 2 bass 4-string, 3 ukulele. `0x3101` string mode 0 auto, 1..6 a fixed string. In the measurements the string number counts from the high E (1 = E4 at 329.6 Hz ... 6 = E2 at 82.4 Hz), observed with a guitar in standard tuning.
+
+Heartbeat: the amp notifies feature `0x0002` (empty value, `N14 c3 ... 02 00 00 00`) periodically. JBL One answers each one with a command 4 frame carrying feature `0x0002` and no value (`00 DD 04 00 01 00 04 00 02 00 00 00`). Without that answer the amp left the tuner page by itself after a few seconds in our tests. The echo is implemented but was not yet confirmed on hardware when this was written.
+
+The amp is muted while the tuner is open, as on its own tuner page.
 
 ## Values and identity
 
