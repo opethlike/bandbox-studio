@@ -228,14 +228,18 @@ were confirmed live too**, via three more `check_mcp.py` flags:
 (`inventory_verified: true`, `details_verified: true`);
 `--live-rename-preset` renamed it (`inventory_verified: true`);
 `--live-save-user-preset` persisted a live edit into it
-(`saved_content_verified: true`). The only snag was environmental, not a
-bug: `preset_operation()` requires the target already selected (same
-precondition the Python docstrings already state), and
-`save_user_preset`'s content verification needs a `Controls.preview`
-established in the *same* process -- each `check_mcp.py` invocation is
-its own process, so a `--live-select-preset` run earlier doesn't carry
-over; `--live-save-user-preset` now selects first in the same session to
-match how a real MCP/GUI session would actually do it.
+(`saved_content_verified: true`). `preset_operation()` requires the
+target already selected (same precondition the Python docstrings already
+state), and `save_user_preset`'s content verification needs a
+`Controls.preview` established in the *same* process -- each
+`check_mcp.py` invocation is its own process, so a `--live-select-preset`
+run earlier doesn't carry over by itself. `--live-save-user-preset` does
+**not** select the preset itself (that would reload it from the device
+and discard pending edits); instead it requires `--live-select-preset`
+or `--live-set-effect-parameter` for the *same* preset_id earlier in the
+same command, and refuses -- before sending anything -- if that
+same-process preview isn't there, rather than sending the save and only
+reporting the failure afterward.
 
 **Every feature this repo implements has now been confirmed live
 through the real `server.py` -> `Controls`/`DriveRoundTrip.swift` ->

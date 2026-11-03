@@ -15,10 +15,13 @@ Live writes (deliberate opt-in, each changes something on the amp):
   --live-rename-preset <preset_id>
     Renames a USER preset (ID 51+) to "Solo CRUD Renamed".
   --live-save-user-preset <preset_id>
-    Saves current live edits into a USER preset (ID 51+). The preset must
-    already be selected (combine with --live-select-preset or an edit flag
-    earlier in the same command, or select it on the amp first) -- this
-    does not select it itself, since that would discard pending edits.
+    Saves current live edits into a USER preset (ID 51+). Requires
+    --live-select-preset or --live-set-effect-parameter for the *same*
+    preset_id earlier in this same command, establishing a same-process
+    preview this script can actually verify -- refused before sending
+    anything otherwise (selecting here itself would discard pending
+    edits, and a preset only selected on the amp can't be confirmed from
+    this process).
   --live-looper [record_seconds]
     Starts a freehand looper recording through the full MCP path, waits
     record_seconds (default 4.0) for the amp to actually capture audio,
@@ -46,6 +49,24 @@ async def live_write(session, output, name, args, verified_key="verified", outpu
     if not data.get(verified_key):
         output.setdefault("failed_tools", []).append(output_key)
     return data
+
+
+def save_preset_guard(established_preview_preset_id, preset_id):
+    """None means proceed with the save; otherwise a refusal result for it,
+    sent without calling bandbox_save_user_preset at all. Selecting here
+    would discard pending edits, and a preset only selected on the amp
+    can't be confirmed from this process -- so without a same-process
+    preview already verified for this exact preset_id, the save is
+    refused up front rather than sent and reported as a failure only
+    after it may have already overwritten the preset."""
+    if established_preview_preset_id == preset_id:
+        return None
+    return {
+        "verified": False, "setting_writes": 0,
+        "error": (f"No same-process preview for preset_id {preset_id}; combine with "
+                 f"--live-select-preset {preset_id} or --live-set-effect-parameter "
+                 f"{preset_id} ... earlier in this command."),
+    }
 
 
 async def main():
@@ -95,17 +116,22 @@ async def main():
                             or (name == "bandbox_read_current_preset" and not data["current_preset_read_verified"])):
                         failures.append(name)
                 output["failed_tools"] = failures
+            established_preview_preset_id = None
             if "--live-select-preset" in sys.argv:
                 i = sys.argv.index("--live-select-preset")
                 preset_id = int(sys.argv[i + 1])
-                await live_write(session, output, "bandbox_select_preset", {"preset_id": preset_id})
+                data = await live_write(session, output, "bandbox_select_preset", {"preset_id": preset_id})
+                if data.get("verified"):
+                    established_preview_preset_id = preset_id
             if "--live-set-effect-parameter" in sys.argv:
                 i = sys.argv.index("--live-set-effect-parameter")
                 preset_id, slot_id, parameter_id, ui_value = (int(a) for a in sys.argv[i + 1:i + 5])
-                await live_write(session, output, "bandbox_set_effect_parameter",
-                                 {"expected_preset_id": preset_id, "slot_id": slot_id,
-                                  "parameter_id": parameter_id, "ui_value": ui_value,
-                                  "confirm_saved_settings": True})
+                data = await live_write(session, output, "bandbox_set_effect_parameter",
+                                        {"expected_preset_id": preset_id, "slot_id": slot_id,
+                                         "parameter_id": parameter_id, "ui_value": ui_value,
+                                         "confirm_saved_settings": True})
+                if data.get("verified"):
+                    established_preview_preset_id = preset_id
             if "--live-set-mixer-channel-volume" in sys.argv:
                 i = sys.argv.index("--live-set-mixer-channel-volume")
                 mixer_channel, level = (int(a) for a in sys.argv[i + 1:i + 3])
@@ -139,18 +165,13 @@ async def main():
             if "--live-save-user-preset" in sys.argv:
                 i = sys.argv.index("--live-save-user-preset")
                 preset_id = int(sys.argv[i + 1])
-                # Do NOT select the preset here: selecting reloads it from the
-                # device and replaces the in-memory preview, so if this same
-                # invocation already made live edits (--live-set-effect-
-                # parameter etc.), reselecting would discard them and save
-                # the unedited, reloaded content instead -- while still
-                # reporting success. The preset must already be selected
-                # (combine with --live-select-preset or an edit flag earlier
-                # in this same command, or have it selected on the amp
-                # itself); otherwise this intentionally fails rather than
-                # silently reselecting over pending edits.
-                await live_write(session, output, "bandbox_save_user_preset",
-                                 {"expected_preset_id": preset_id})
+                refusal = save_preset_guard(established_preview_preset_id, preset_id)
+                if refusal is not None:
+                    output.setdefault("failed_tools", []).append("bandbox_save_user_preset")
+                    output["results"]["bandbox_save_user_preset"] = refusal
+                else:
+                    await live_write(session, output, "bandbox_save_user_preset",
+                                     {"expected_preset_id": preset_id})
             if "--live-looper" in sys.argv:
                 i = sys.argv.index("--live-looper")
                 record_seconds = (float(sys.argv[i + 1])
